@@ -19,7 +19,7 @@ import {
   RallyManager,
   Raid,
   TileGetter,
-  farmingLoop,
+  main,
   mapExplorer,
   WebSocketServer,
 } from "./src/index.js";
@@ -204,6 +204,7 @@ app.get("/explore", (req, res) => {
 
       const troops = rallyManager.troopsFrom(units);
       const travelTime = (arrivalTime - time) * 1000;
+      const returnTime = units.t11 ? rallyManager.heroReturnTime({ hero, travelTime }) : travelTime;
       const arrivalDate = type === 9 ? arrivalTime * 1000 - travelTime : arrivalTime * 1000;
       const returnDate = type === 9 ? arrivalTime * 1000 : type === 5 ? 0 : arrivalDate + travelTime;
       const kid = type === 9 ? cellFrom.id : cellTo.id;
@@ -211,14 +212,15 @@ app.get("/explore", (req, res) => {
         x: type === 9 ? cellFrom.x : cellTo.x,
         y: type === 9 ? cellFrom.y : cellTo.y,
       };
+      const eventName = { [scoutId]: "scout", t11: "hero" }[troops[0].id] || "raid";
 
       const raid = new Raid({
         did,
         coords,
-        eventName: scoutingTarget ? "scout" : "raid",
-        eventType: type,
+        eventName,
+        type,
         travelTime,
-        returnTime: travelTime,
+        returnTime,
         arrivalDate,
         returnDate,
         troops,
@@ -227,8 +229,8 @@ app.get("/explore", (req, res) => {
       const raids = raidList[kid] || [];
       raids.push(raid);
       raids.sort((a, b) => {
-        const dateA = a.status >= 3 ? a.returnDate : a.arrivalDate;
-        const dateB = b.status >= 3 ? b.returnDate : b.arrivalDate;
+        const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
+        const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
         return dateA - dateB;
       });
       raidList[kid] = raids;
@@ -252,7 +254,7 @@ app.get("/explore", (req, res) => {
     api,
   };
 
-  const { queueTile } = farmingLoop(state);
+  const { queueTile } = main(state);
   app.set("queueTile", queueTile);
   app.set("villageTroops", villageTroops);
 

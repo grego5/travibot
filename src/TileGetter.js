@@ -20,6 +20,7 @@ export default class TileGetter {
       amount: 0,
       since: Date.now(),
     };
+    this.updateQueue = new Map();
   }
 
   getdoc = async (x, y) => {
@@ -237,11 +238,13 @@ export default class TileGetter {
     }
   };
 
-  updateTiles = async (updateList) => {
+  updateTiles = async () => {
     let query = "";
+    let kidList = "[";
 
-    for (const kid of updateList.keys()) {
-      const { x, y } = updateList.get(kid).coords;
+    for (const kid of this.updateQueue.keys()) {
+      const { x, y } = this.updateQueue.get(kid).coords;
+      kidList += kid + ", ";
 
       query += `
      m${kid} :mapCell(coordinates: { x: ${x}, y: ${y} }) {
@@ -278,23 +281,31 @@ export default class TileGetter {
     }
 
     query = "query {" + query + "}";
+    kidList = kidList.slice(0, -2) + "]";
+    const tileUpdates = [];
 
     try {
-      const res = await this.api.graphql({ query, logEvent: `update ${updateList.size} tiles` });
+      const res = await this.api.graphql({ query, logEvent: `update ${this.updateQueue.size} tiles ${kidList}` });
 
-      for (const kid of updateList.keys()) {
-        const { callback } = updateList.get(kid);
-        this.parseTile({
+      for (const kid of this.updateQueue.keys()) {
+        const { callback } = this.updateQueue.get(kid);
+        const { report, tile } = this.parseTile({
           mapCell: res[`m${kid}`],
           mapReports: res[`r${kid}`],
           surroundingReports: res[`s${kid}`],
           callback,
         });
+
+        tileUpdates.push({ report, tile, kid });
       }
+      this.updateQueue.clear();
+      return tileUpdates;
     } catch (error) {
       console.log(error.message);
-      console.log(updateList);
+      console.log(this.updateQueue);
     }
+
+    return tileUpdates;
   };
 
   getTileCard = async ({ x, y, did }, data = null) => {

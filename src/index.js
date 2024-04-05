@@ -1,4 +1,4 @@
-export { default as farmingLoop } from "./farmingLoop.js";
+export { default as main } from "./main.js";
 export { default as FarmList } from "./FarmList.js";
 export { default as HttpClient } from "./HttpClient.js";
 export { default as mapExplorer } from "./mapExplorer.js";

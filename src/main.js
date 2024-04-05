@@ -6,7 +6,7 @@ import path from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export function farmingLoop(data) {
+export function main(data) {
   const {
     storage,
     ownId,
@@ -23,7 +23,7 @@ export function farmingLoop(data) {
   const { map, rallyCron, tileList = {}, reports = {}, raidList } = storage.getAll();
   const unitsData = storage.get("tribesData")[tribeId];
   const { createRally } = rallyManager;
-  const { updateTiles } = tileGetter;
+  const { updateTiles, updateQueue } = tileGetter;
 
   const reassignTroops = (villages) => {
     const reassigned = villages.map((did) => {
@@ -45,19 +45,19 @@ export function farmingLoop(data) {
   const now = Date.now();
   let asyncStatus = 0;
   const rallyQueue = new Map();
-  const updateQueue = new Map();
   let heroTarget = null;
-  let lastTileUpdate = now;
+  let lastTileUpdate = 0;
   let lastStatusUpdate = now;
   const statusQuery = `query {
     ${fragments.hero + fragments.troops}
   }`;
 
-  const queueTile = ({ kid, coords, force, callback }) => {
+  const queueTile = ({ kid, coords, force }) => {
     if (force) lastTileUpdate = 0;
     updateQueue.set(kid, {
       coords: coords || tileList[kid].coords,
       callback({ tile, report }) {
+        console.log("old tile update " + kid);
         tileList[kid] = tile;
         reports[kid] = report;
         storage.save();
@@ -68,8 +68,6 @@ export function farmingLoop(data) {
           villages.forEach(({ did, distance }) => {
             villageTroops.get(did).assign({ kid, distance });
           });
-
-        callback && callback({ tile, report });
       },
     });
   };
@@ -77,13 +75,15 @@ export function farmingLoop(data) {
   wss.setRoute("sendTroops", (data) => {
     if (data.eventName === "hero") {
       const { did, kid, coords } = data;
-      heroTarget = { kid, did, coords, ratio: 999 };
+      heroTarget = { kid, did, coords, ratio: 999, delay: 0 };
     } else {
       const { kid, listId, targetId } = data;
       const rally = createRally(data);
       rallyQueue.set(kid, { id: targetId, listId, rally });
     }
   });
+
+  wss.setRoute("updateTile", ({ kid, coords }) => queueTile({ kid, coords, force: 1 }));
 
   setInterval(async () => {
     const now = Date.now();
@@ -115,9 +115,10 @@ export function farmingLoop(data) {
 
     // cleanup expired raids
 
-    for (const kid in raidList) {
-      const activeRaids = raidList[kid].filter(({ origin, status, returnDate, troops }) => {
-        if (returnDate <= now && status >= 3) {
+    for (const i in raidList) {
+      const kid = Number(i);
+      const activeRaids = raidList[kid].filter(({ origin, type, returnDate, troops }) => {
+        if (type === 9 && returnDate <= now) {
           const { idleTroops } = villageTroops.get(origin);
           troops.forEach(({ id, count }) => (idleTroops[id] += count));
           const reassigned = reassignTroops([origin]);
@@ -140,13 +141,14 @@ export function farmingLoop(data) {
 
       // check and update status of the current raid
 
-      if (currentRaid && currentRaid.arrivalDate <= now && currentRaid.status < 3) {
+      if (currentRaid && currentRaid.arrivalDate <= now && currentRaid.type !== 9) {
         const { coords } = currentRaid;
 
         lastTileUpdate = 0;
         updateQueue.set(kid, {
           coords,
           callback({ tile, report }) {
+            console.log("raid arrival " + kid);
             const raids = raidList[kid];
             const currentRaid = raids[0];
 
@@ -165,11 +167,11 @@ export function farmingLoop(data) {
               });
               if (!currentRaid.troops.length) currentRaid.returnDate = 0; // dead
             }
-            currentRaid.status += 2;
+            currentRaid.type = 9;
 
             raids.sort((a, b) => {
-              const dateA = a.status >= 3 ? a.returnDate : a.arrivalDate;
-              const dateB = b.status >= 3 ? b.returnDate : b.arrivalDate;
+              const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
+              const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
               return dateA - dateB;
             });
 
@@ -202,6 +204,7 @@ export function farmingLoop(data) {
             updateQueue.set(kid, {
               coords,
               callback({ tile }) {
+                console.log("ownership change " + kid);
                 if (!tile.owned) {
                   farmList.createSlots({ listId, targets: [{ coords, kid }] });
                 }
@@ -253,7 +256,7 @@ export function farmingLoop(data) {
                 if (!raidTarget || raidTarget.ratio < ratio) raidTarget = { kid, did, ratio, coords, targetId };
                 break;
               case "hero":
-                if (!heroTarget || heroTarget.ratio < ratio) heroTarget = { kid, did, ratio, coords };
+                if (!heroTarget || heroTarget.ratio < ratio) heroTarget = { kid, did, ratio, coords, delay: 20000 };
                 break;
               default:
                 rallyQueue.set(kid, {
@@ -280,23 +283,22 @@ export function farmingLoop(data) {
 
     if (updateQueue.size && (now - lastTileUpdate >= 6e4 || updateQueue.size >= 10)) {
       asyncStatus++;
-      await updateTiles(updateQueue).then(() => {
-        updateQueue.clear();
-        lastTileUpdate = Date.now();
-        asyncStatus--;
-      });
+      const updates = await updateTiles();
+      wss.send({ event: "tileList", payload: updates });
+      lastTileUpdate = Date.now();
+      asyncStatus--;
     }
 
     if (heroTarget) {
       asyncStatus++;
-      const { did, kid, coords } = heroTarget;
+      const { did, kid, coords, delay } = heroTarget;
       const { idleTroops, raidTroops, hero } = villageTroops.get(did);
       const { eventName, troops } = raidTroops[kid];
       const rally = createRally({ did, eventName, coords, troops, hero });
       console.log(`Hero will be sent to ${rally.coords.x} | ${rally.coords.y}`);
 
       setTimeout(async () => {
-        if (idleTroops.t11 && map[did].autoraid) {
+        if (idleTroops.t11 && (!delay || autoraid)) {
           idleTroops.t11 = 0;
           const raids = await rally.dispatch();
           const reassigned = reassignTroops([did]);
@@ -307,7 +309,7 @@ export function farmingLoop(data) {
         }
         heroTarget = null;
         asyncStatus--;
-      });
+      }, delay);
     }
 
     if (rallyQueue.size) {
@@ -330,7 +332,7 @@ export function farmingLoop(data) {
 
         for (const kid of rallyQueue.keys()) {
           raidedTiles.push(
-            new Promise((res) => {
+            new Promise((resolve) => {
               const { rally } = rallyQueue.get(kid);
               const { did } = rally;
 
@@ -342,8 +344,8 @@ export function farmingLoop(data) {
                   rally.troops.forEach(({ id, count }) => (idleTroops[id] -= count));
                   if (!raidingVillages.find((id) => id === did)) raidingVillages.push(did);
                   const raids = await rally.dispatch();
-                  res({ kid, raids });
-                }
+                  resolve({ kid, raids });
+                } else resolve(null);
               }, delay * 500);
             })
           );
@@ -351,15 +353,14 @@ export function farmingLoop(data) {
           delay++;
         }
 
-        Promise.all(raidedTiles).then((res) => {
-          rallyQueue.clear();
-          const reassigned = reassignTroops(raidingVillages);
-          wss.send([
-            { event: "villageTroops", payload: reassigned },
-            { event: "raidList", payload: res },
-          ]);
-          asyncStatus--;
-        });
+        const values = await Promise.all(raidedTiles).then((arr) => arr.filter((data) => data !== null));
+        rallyQueue.clear();
+        const reassigned = reassignTroops(raidingVillages);
+        wss.send([
+          { event: "villageTroops", payload: reassigned },
+          { event: "raidList", payload: values },
+        ]);
+        asyncStatus--;
       }
     }
   }, 1000);
@@ -367,4 +368,4 @@ export function farmingLoop(data) {
   return { queueTile };
 }
 
-export default farmingLoop;
+export default main;

@@ -14,7 +14,6 @@ export default class WebSocketServer {
       ws.onmessage = (message) => {
         try {
           const data = JSON.parse(message.data);
-          console.log(data);
           Array.isArray(data) ? data.forEach((data) => process(data)) : process(data);
         } catch (error) {
           console.log("Unable to parse websocket message.", error.message);

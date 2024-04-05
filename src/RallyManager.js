@@ -1,6 +1,5 @@
 import { Raid, xy2id } from "./index.js";
 import { JSDOM } from "jsdom";
-import fs from "fs";
 
 function parseTravelTime(string) {
   const digits = string.split(" ")[1].split(":");
@@ -36,7 +35,7 @@ export default class RallyManager {
     this.unitsData = this.storage.get("tribesData")[tribeId];
   };
 
-  heroReturnTime = async ({ hero, travelTime }) => {
+  heroReturnTime = ({ hero, travelTime }) => {
     const {
       equipment: { leftHand },
     } = hero;
@@ -102,9 +101,10 @@ export default class RallyManager {
     }
 
     const kid = xy2id(coords);
-    this.browser.submitRally
-      .POST({ body: params, event: JSON.stringify(units) })
-      .then(() => console.log(`Troops dispached to ${coords.x}|${coords.y} (${kid})`));
+    this.browser.submitRally.POST({
+      body: params,
+      logEvent: JSON.stringify(units) + ` => (${coords.x}|${coords.y}) (${kid})`,
+    });
 
     const travelTime = parseTravelTime(form.querySelector("#in").textContent);
     const returnTime = hero ? this.heroReturnTime({ hero, travelTime }) : travelTime;
@@ -114,8 +114,8 @@ export default class RallyManager {
     const raids = raidList[kid] || (raidList[kid] = []);
     raids.push(raid);
     raids.sort((a, b) => {
-      const dateA = a.status >= 3 ? a.returnDate : a.arrivalDate;
-      const dateB = b.status >= 3 ? b.returnDate : b.arrivalDate;
+      const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
+      const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
       return dateA - dateB;
     });
     this.storage.save();

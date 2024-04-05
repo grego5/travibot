@@ -213,7 +213,11 @@ class FarmList {
 
       const raids = raidList[kid] || (raidList[kid] = []);
       raids.push(raid);
-      raids.sort((a, b) => a.status * a.arrivalDate - b.status * b.arrivalDate);
+      raids.sort((a, b) => {
+        const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
+        const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
+        return dateA - dateB;
+      });
       raidedTiles.push({ kid, raids });
 
       callback && callback(raids);
