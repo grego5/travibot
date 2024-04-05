@@ -1,5 +1,4 @@
-import { xy2id } from "./functions.js";
-import Raid from "./Raid.js";
+import { Raid, xy2id } from "./index.js";
 import { JSDOM } from "jsdom";
 import fs from "fs";
 
@@ -37,31 +36,10 @@ export default class RallyManager {
     this.unitsData = this.storage.get("tribesData")[tribeId];
   };
 
-  heroReturnTime = async (travelTime) => {
-    const query = `
-    query {
-      ownPlayer {
-        hero {
-          equipment {
-            leftHand {
-              attributes {
-                value
-                effectType
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
-
+  heroReturnTime = async ({ hero, travelTime }) => {
     const {
-      ownPlayer: {
-        hero: {
-          equipment: { leftHand },
-        },
-      },
-    } = await this.api.graphql({ query });
+      equipment: { leftHand },
+    } = hero;
 
     if (!leftHand) return travelTime;
 
@@ -89,39 +67,33 @@ export default class RallyManager {
     return troops;
   };
 
-  createRally = ({ did, coords, units = [], troops, eventName, eventType = 4 }) => {
+  createRally = ({ did, coords, units = {}, troops, eventName, eventType = 4, hero }) => {
     const _troops = troops || this.troopsFrom(units);
-    const scouting = +(_troops.length === 1 && !!_troops.find((unit) => unit.id === this.scoutId));
 
-    const scoutTarget = "&troop%5BscoutTarget%5D=1";
-    const body = `eventType=${eventType}&x=${coords.x}&y=${coords.y}${_troops.reduce(
-      (acc, { id, count }) => (acc += `&troop%5B${id}%5D=${count}`),
-      ""
-    )}${scouting ? scoutTarget : ""}&ok=ok`;
+    const body = `eventType=${eventType}&x=${coords.x}&y=${coords.y}${_troops.reduce((acc, { id, count }) => {
+      acc += `&troop%5B${id}%5D=${count}`;
+      units[id] = count;
+      return acc;
+    }, "")}&ok=ok`;
 
-    const rally = { body, did, coords, eventName, troops: _troops };
+    const rally = { body, did, coords, eventName, troops: _troops, units, hero };
     rally.dispatch = () => this.dispatchRally(rally);
     return rally;
   };
 
   dispatchRally = async (rally) => {
-    const { body, did, coords, eventName, eventType = 4, troops, catapultTargets = [] } = rally;
+    const { body, did, coords, eventName, eventType, troops, units, catapultTargets = [], hero } = rally;
 
     const res = await this.browser.submitRally.POST({ body, params: [["newdid", did]] });
     const html = await res.text();
     const dom = new JSDOM(html);
     const form = dom.window.document.getElementById("troopSendForm");
+
     const confirm = form.querySelector("button.rallyPointConfirm");
     const checksum = confirm.getAttribute("onclick").match(/'([^']+)';/)[1];
 
     let params = "";
-    let hero = false;
-    for (const { name, value } of form.elements) {
-      if (value) {
-        params += `${name}=${value}&`;
-        if (name === "troops[0][t11]" && Number(value)) hero = true;
-      }
-    }
+    for (const { name, value } of form.elements) if (value) params += `${name}=${value}&`;
     params += `checksum=${checksum}`;
 
     if (catapultTargets.length) {
@@ -131,23 +103,23 @@ export default class RallyManager {
 
     const kid = xy2id(coords);
     this.browser.submitRally
-      .POST({ body: params })
+      .POST({ body: params, event: JSON.stringify(units) })
       .then(() => console.log(`Troops dispached to ${coords.x}|${coords.y} (${kid})`));
 
     const travelTime = parseTravelTime(form.querySelector("#in").textContent);
-    const returnTime = hero ? await this.heroReturnTime(travelTime) : travelTime;
+    const returnTime = hero ? this.heroReturnTime({ hero, travelTime }) : travelTime;
 
     const raid = new Raid({ did, coords, eventName, eventType, travelTime, returnTime, troops });
-    console.log(raid);
     const raidList = this.storage.get("raidList");
-    kid in raidList ? raidList[kid].push(raid) : (raidList[kid] = [raid]);
-    raidList[kid].sort((a, b) => {
+    const raids = raidList[kid] || (raidList[kid] = []);
+    raids.push(raid);
+    raids.sort((a, b) => {
       const dateA = a.status >= 3 ? a.returnDate : a.arrivalDate;
       const dateB = b.status >= 3 ? b.returnDate : b.arrivalDate;
       return dateA - dateB;
     });
     this.storage.save();
 
-    return raidList[kid];
+    return raids;
   };
 }

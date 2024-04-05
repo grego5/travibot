@@ -228,8 +228,13 @@ export default class TileGetter {
      }
    }
  `;
-    const data = await this.api.graphql({ query, variables });
-    return this.parseTile(data);
+    try {
+      const data = await this.api.graphql({ query, variables, logEvent: `get tile ${x} | ${y}` });
+      return this.parseTile(data);
+    } catch (error) {
+      console.log(error.message);
+      return null;
+    }
   };
 
   updateTiles = async (updateList) => {
@@ -274,17 +279,21 @@ export default class TileGetter {
 
     query = "query {" + query + "}";
 
-    const res = await this.api.graphql({ query });
-    if (!res) return;
+    try {
+      const res = await this.api.graphql({ query, logEvent: `update ${updateList.size} tiles` });
 
-    for (const kid of updateList.keys()) {
-      const { callback } = updateList.get(kid);
-      this.parseTile({
-        mapCell: res[`m${kid}`],
-        mapReports: res[`r${kid}`],
-        surroundingReports: res[`s${kid}`],
-        callback,
-      });
+      for (const kid of updateList.keys()) {
+        const { callback } = updateList.get(kid);
+        this.parseTile({
+          mapCell: res[`m${kid}`],
+          mapReports: res[`r${kid}`],
+          surroundingReports: res[`s${kid}`],
+          callback,
+        });
+      }
+    } catch (error) {
+      console.log(error.message);
+      console.log(updateList);
     }
   };
 

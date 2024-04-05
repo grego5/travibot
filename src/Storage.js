@@ -6,13 +6,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 class Storage {
-  constructor(storageFile) {
+  constructor(storageFile, entries) {
     this.storageFile = path.join(__dirname, "temp", storageFile);
     this.storage = {};
 
     try {
       const data = readFileSync(this.storageFile, "utf8");
       this.storage = JSON.parse(data);
+      entries.forEach(([key, value]) => {
+        if (!this.storage[key]) storage[key] = value;
+      });
     } catch (error) {
       if (error.code === "ENOENT") {
         writeFileSync(this.storageFile, "{}", "utf8");

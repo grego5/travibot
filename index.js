@@ -1,23 +1,35 @@
+import fs from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 import dontenv from "dotenv";
+
 import express from "express";
 import bodyParser from "body-parser";
-import HttpClient from "./src/HttpClient.js";
-import fragments from "./src/fragments.js";
-import Storage from "./src/Storage.js";
-import FarmList from "./src/FarmList.js";
-import TroopSetup from "./src/TroopSetup.js";
-import { parseTribesData } from "./src/functions.js";
-import RallyManager from "./src/RallyManager.js";
-import Raid from "./src/Raid.js";
-import TileGetter from "./src/TileGetter.js";
-import farmingLoop from "./src/farmingLoop.js";
-import mapExplorer from "./src/mapExplorer.js";
+import {
+  HttpClient,
+  fragments,
+  Storage,
+  FarmList,
+  TroopSetup,
+  parseTribesData,
+  RallyManager,
+  Raid,
+  TileGetter,
+  farmingLoop,
+  mapExplorer,
+  WebSocketServer,
+} from "./src/index.js";
 
 dontenv.config();
 const { json } = bodyParser;
 
 const app = express();
 const port = 3000;
+const wss = new WebSocketServer(3001);
 
 const browser = new HttpClient({
   username: process.env.LOGIN,
@@ -39,7 +51,6 @@ const browser = new HttpClient({
     "Referrer-Policy": "strict-origin-when-cross-origin",
   },
 });
-
 const api = new HttpClient({
   username: process.env.LOGIN,
   password: process.env.PASSWORD,
@@ -55,18 +66,14 @@ const api = new HttpClient({
     "x-version": "2435.8",
   },
 });
-
-const storage = new Storage("store.json");
-[
+const storage = new Storage("store.json", [
   ["tileList", {}],
   ["raidList", {}],
   ["reports", {}],
   ["map", {}],
   ["raidArrays", {}],
   ["rallyCron", []],
-].forEach(([key, value]) => {
-  if (!storage.get(key)) storage.set(key, value);
-});
+]);
 const farmList = new FarmList({ api, storage });
 const rallyManager = new RallyManager({ browser, api, storage });
 const tileGetter = new TileGetter({ browser, api, storage });
@@ -80,31 +87,17 @@ app.use((req, res, next) => {
   next();
 });
 
-app.post("/rallycron", (req, res) => {
+app.post("/rally", (req, res) => {
   const data = req.body;
-  if (!data) req.send("rallycron: No data");
+  if (!data) req.send("queue-rally: No data");
 
   const rallyCron = storage.get("rallyCron");
   rallyCron.push(data);
   rallyCron.sort((a, b) => a.departure - b.departure);
-  storage.save();
+  if (data.departure - Date.now() > 10000) {
+    storage.save();
+  }
   res.send(JSON.stringify(rallyCron));
-});
-
-app.post("/queueRally", (req, res) => {
-  const data = req.body;
-  if (!data) req.send("queueRally: No data");
-  const queueRally = app.get("queueRally");
-  queueRally(data);
-  res.send("rally dispatch queued");
-});
-
-app.post("/queueTile", (req, res) => {
-  const data = req.body;
-  if (!data) res.send("queueTile: No data");
-  const queueTile = app.get("queueTile");
-  const { kid } = data;
-  queueTile({ kid, callback: (data) => res.send(data), force: 1 });
 });
 
 app.post("/autoraid", (req, res) => {
@@ -112,35 +105,41 @@ app.post("/autoraid", (req, res) => {
 
   const map = storage.get("map");
   map[did].autoraid = autoraid;
-  storage.set("map", map);
+  storage.save();
   res.send(`autoraid ${autoraid ? "enabled" : "disabled"}`);
 });
 
 app.get("/storage", (req, res) => {
   const data = storage.getAll();
+  data.villageTroops = app.get("villageTroops").get();
   res.send(JSON.stringify(data));
 });
 
-app.get("/troops", (req, res) => {
+app.get("/tile", (req, res) => {
+  const { kid } = req.query;
+  if (!kid) res.send("get-tile: No data");
+  const queueTile = app.get("queueTile");
+  queueTile({ kid, callback: (data) => res.send(data), force: 1 });
+});
+
+app.get("/get-village-troops", (req, res) => {
   const villageTroops = app.get("villageTroops");
   const { did } = req.query;
   const data = villageTroops.get(did);
   res.send(JSON.stringify(data));
 });
 
-app.post("/mapExplorer", (req, res) => {
-  const data = req.body;
-  if (!data) res.send("queueTile: No data");
+app.get("/explore", (req, res) => {
+  const { did, x, y } = req.query;
+  if (!did) res.send("queueTile: No data");
 
-  const { did, coords } = data;
-  mapExplorer({ did, storage, tileGetter, farmList, coords, callback: (data) => res.send(data) });
+  mapExplorer({ did, storage, tileGetter, farmList, coords: { x, y }, callback: (data) => res.send(data) });
 });
 
 (async () => {
-  let pageQuery = "";
+  let pageQuery = fragments.troops + fragments.hero;
   const callbackArray = [];
 
-  pageQuery += fragments.troops + fragments.hero;
   if (!storage.get("allTribes")) {
     pageQuery += fragments.tribes;
     callbackArray.push(function (data) {
@@ -155,37 +154,28 @@ app.post("/mapExplorer", (req, res) => {
         gameWorldProgress { stages { time } }
       },
       ownPlayer {
-        id,
-        tribeId,
+        id, tribeId,
         goldFeatures { goldClub },
-        village {
-          id, name, x, y,
-          trainingTroops {
-            building {
-              buildingTypeId
-            }, unit { id }, unitsLeft, lastUnitReadyAt
-          }
-          buildEvents {
-            buildingTypeId, timestamp
-          },
-        },
+        village { id, name, x, y },
       }
       ${pageQuery}
     }`;
 
-  const data = await api.graphql({ query, callbackArray });
+  const data = await api.graphql({ query, callbackArray, logEvent: "init" });
   if (!data) return;
 
   const { hero, villages, id: ownId, tribeId, goldFeatures } = data.ownPlayer;
   const { time: startDate } = data.statistics.gameWorldProgress.stages[0];
-  const peaceEndingDate = startDate * 1000 + 4.32e8 - 7.2e6;
-  storage.set("peaceEndingDate", peaceEndingDate);
-
+  const nextStageDate = startDate * 1000 + 4.32e8 - 7.2e6;
   const goldClub = !!goldFeatures.goldClub;
+
   const scoutId = [, "t4", "t4", "t3"][tribeId];
   rallyManager.setTribe(tribeId, scoutId);
+
   const map = storage.get("map");
   const raidList = {};
+  const villageTroops = new TroopSetup({ storage, hero, villages, scoutId, tribeId });
+  // fs.writeFileSync(`${__dirname}/logs/villageTroops.json`, JSON.stringify(villageTroops.get(), null, 2));
 
   villages.forEach((village) => {
     const did = village.id;
@@ -206,8 +196,11 @@ app.post("/mapExplorer", (req, res) => {
         time,
         scoutingTarget,
         units,
+        player,
         troopEvent: { arrivalTime, type, cellTo, cellFrom },
       } = node;
+
+      if (player.id !== ownId) return;
 
       const troops = rallyManager.troopsFrom(units);
       const travelTime = (arrivalTime - time) * 1000;
@@ -243,10 +236,9 @@ app.post("/mapExplorer", (req, res) => {
   });
   storage.set("raidList", raidList);
 
-  const villageTroops = new TroopSetup({ storage, hero, villages, scoutId, tribeId });
-
   const state = {
     storage,
+    nextStageDate,
     rallyManager,
     tileGetter,
     farmList,
@@ -255,12 +247,12 @@ app.post("/mapExplorer", (req, res) => {
     scoutId,
     villageTroops,
     villages,
-    peaceEndingDate,
     goldClub,
+    wss,
+    api,
   };
 
-  const { queueTile, queueRally } = farmingLoop(state);
-  app.set("queueRally", queueRally);
+  const { queueTile } = farmingLoop(state);
   app.set("queueTile", queueTile);
   app.set("villageTroops", villageTroops);
 

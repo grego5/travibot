@@ -22,8 +22,16 @@ export class HttpClient {
         throw new Error(`Property "${name}" already exist. Specify a different route name`);
       }
       this[name] = methods.reduce((acc, method) => {
-        acc[method] = ({ referrer, body, headers, params: userParams = [] }) =>
-          this.run({ pathname: path, referrer, headers, body, params: defaultParams.concat(userParams), method });
+        acc[method] = ({ referrer, body, headers, params: userParams = [], logEvent }) =>
+          this.run({
+            pathname: path,
+            referrer,
+            headers,
+            body,
+            params: defaultParams.concat(userParams),
+            method,
+            logEvent,
+          });
         return acc;
       }, {});
     }
@@ -52,6 +60,7 @@ export class HttpClient {
         "x-requested-with": "XMLHttpRequest",
         "x-version": "2435.8",
       },
+      logEvent: "login",
     })
       .then((res) => {
         return res.json();
@@ -79,6 +88,7 @@ export class HttpClient {
         "sec-fetch-user": "?1",
         "upgrade-insecure-requests": "1",
       },
+      logEvent: "auth",
     })
       .then((res) => {
         const cookies = res.headers.get("Set-Cookie");
@@ -97,7 +107,7 @@ export class HttpClient {
     return true;
   };
 
-  run = async ({ retry, pathname = "/", referrer = "/", body, method, headers = {}, params = [] }) => {
+  run = async ({ retry, pathname = "/", referrer = "/", body, method, headers = {}, params = [], logEvent = "" }) => {
     const now = Date.now();
 
     if (now - this.tokenDate > this.tokenLife) {
@@ -134,7 +144,7 @@ export class HttpClient {
           credentials: "include",
         };
 
-    console.log(`[${new Date().toLocaleTimeString("en-GB", { hour12: false })}] ${url}`);
+    logEvent && console.log(`[${new Date().toLocaleTimeString("en-GB", { hour12: false })}] ${logEvent}: ${url}`);
     try {
       const res = await fetch(url, config);
 
@@ -149,18 +159,24 @@ export class HttpClient {
     } catch (error) {
       console.log(config);
       console.log(error.message);
-      if (count < 2) return this.run({ retry: { url, config, count } });
+      if (count < 2) return this.run({ retry: { url, config, count, logEvent: "retry" } });
       else throw error;
     }
   };
 
-  graphql = async ({ query, fragments, variables, callbackArray = [] }) => {
+  graphql = async ({ query, fragments, variables, callbackArray = [], logEvent }) => {
     const body = { query };
     fragments && (body.fragments = fragments);
     variables && (body.variables = variables);
 
     try {
-      const res = await this.run({ pathname: "/api/v1/graphql", referrer: "/dorf1.php", body, method: "POST" });
+      const res = await this.run({
+        pathname: "/api/v1/graphql",
+        referrer: "/dorf1.php",
+        body,
+        method: "POST",
+        logEvent,
+      });
       const { data } = await res.json();
       callbackArray.forEach((cb) => cb(data));
       return data;

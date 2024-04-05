@@ -1,31 +1,48 @@
-import { simCombat } from "./functions.js";
+import { simCombat } from "./index.js";
 const t1 = "t1";
 const t11 = "t11";
 
 export default class TroopSetup {
   constructor({ storage, hero, villages, scoutId, tribeId }) {
-    this.villageTroops = villages.reduce((acc, { id: did, name, troops, ownTroops }) => {
-      acc[did] = {
-        name,
-        did,
-        idleTroops: troops.ownTroopsAtTown.units,
-        totalTroops: ownTroops.units,
-        raidTroops: {},
-        hero: hero.homeVillage.id === did ? hero : null,
-        assign: (target) => this.assign(did, target),
-      };
-
-      return acc;
-    }, {});
-
+    this.map = storage.get("map");
     this.scoutId = scoutId;
     this.allRaidArrays = storage.get("raidArrays");
     this.tileList = storage.get("tileList");
     this.reports = storage.get("reports");
     this.ownTribe = storage.get("tribesData")[tribeId];
+    this.hero = hero;
+
+    this.villageTroops = villages.reduce((acc, village) => {
+      acc[village.id] = this.create(village);
+      return acc;
+    }, {});
   }
 
-  get = (did) => this.villageTroops[did];
+  get = (did) => (did ? this.villageTroops[did] : this.villageTroops);
+
+  update = ({ hero, villages }) => {
+    this.hero = hero;
+    villages.forEach((village) => {
+      const currentData = this.get(village.id) || {};
+      Object.assign(currentData, this.create(village));
+      const { targets } = this.map[village.id];
+      targets.forEach((target) => currentData.assign(target));
+    });
+    return this.villageTroops;
+  };
+
+  create(village) {
+    const { id: did, name, troops, ownTroops } = village;
+    return {
+      name,
+      did,
+      idleTroops: troops.ownTroopsAtTown.units,
+      totalTroops: ownTroops.units,
+      raidTroops: {},
+      hero: this.hero.homeVillage.id === did ? this.hero : null,
+      assign: (target) => this.assign(did, target),
+    };
+  }
 
   assign = (did, target) => {
     const now = Date.now();
@@ -124,7 +141,7 @@ export default class TroopSetup {
       const { result, alive, bounty, xp: _xp } = mountedRaid ? mountCombat : footCombat;
       const time = distance / speed;
       const xp = Math.round(_xp * (1 + heroBonus.xp / 100));
-      const minXpToLoss = Math.min(5, Math.round((hero.xpForNextLevel / hero.health) * 10) / 10);
+      const minXpToLoss = Math.min((5 / 20) * hero.level, Math.round((hero.xpForNextLevel / hero.health) * 10) / 10);
 
       const healthLoss = Math.max(result[0].count - heroBonus.damageReduction, 0);
       const percetLoss = Math.round((healthLoss / hero.health) * 100);

@@ -1,3 +1,5 @@
+import { Raid } from "./index.js";
+
 class FarmList {
   constructor({ api, storage }) {
     this.storage = storage;
@@ -25,7 +27,7 @@ class FarmList {
       id,
     };
 
-    const { farmList } = await this.api.graphql({ query, variables });
+    const { farmList } = await this.api.graphql({ query, variables, logEvent: "Get farmlist for " + id });
     return farmList;
   };
 
@@ -48,7 +50,7 @@ class FarmList {
      }
      `;
 
-    const data = await this.api.graphql({ query });
+    const data = await this.api.graphql({ query, logEvent: "Get farmlists for " + village.id });
     const lists = data.ownPlayer.farmLists.filter((list) => list.ownerVillage.id === village.id);
     return lists;
   };
@@ -61,7 +63,7 @@ class FarmList {
       defaultUnits: { ...this.units, t1: 1 },
     };
     try {
-      const res = await this.api.farmList.GET({ body: newList });
+      const res = await this.api.farmList.GET({ body: newList, logEvent: "Create farmlist" });
 
       if (!res.ok) {
         const { error, message } = await res.json();
@@ -100,7 +102,7 @@ class FarmList {
       }),
     };
 
-    await this.api.farmListSlot.POST({ body: farmSlots });
+    await this.api.farmListSlot.POST({ body: farmSlots, logEvent: "Create farmlist slots" });
 
     return true;
   };
@@ -115,7 +117,7 @@ class FarmList {
        }
      }`;
 
-    const { farmList } = await this.api.graphql({ query });
+    const { farmList } = await this.api.graphql({ query, logEvent: "Link farmlist" });
     const { slots } = farmList;
 
     return targets.map(function (t) {
@@ -166,7 +168,7 @@ class FarmList {
 
     deleteEntries.forEach((key) => rallyQueue.delete(key));
 
-    await this.api.farmListSlot.PUT({ slots });
+    await this.api.farmListSlot.PUT({ slots, logEvent: "Update farmlist slots" });
 
     return sortedQueue;
   };
@@ -179,7 +181,7 @@ class FarmList {
       lists: sortedQueue,
     };
 
-    await this.api.farmListSend.POST({ body: farmListSend }).then(async (res) => {
+    await this.api.farmListSend.POST({ body: farmListSend, logEvent: "Send farmlist" }).then(async (res) => {
       const { lists } = await res.json();
 
       lists.forEach(({ error, id, targets }) => {
@@ -200,6 +202,7 @@ class FarmList {
     const now = Date.now();
     const raidList = this.storage.get("raidList");
     const raidingVillages = [];
+    const raidedTiles = [];
 
     rallyQueue.forEach(({ id, rally, callback }, kid) => {
       const { nextAttackAt } = data[`s${id}`];
@@ -208,15 +211,15 @@ class FarmList {
       const raid = new Raid({ did, eventName, travelTime, returnTime: travelTime, troops });
       if (!raidingVillages.find((id) => id === did)) raidingVillages.push(did);
 
-      if (kid in raidList) {
-        raidList[kid].push(raid);
-        raidList[kid].sort((a, b) => a.status * a.arrivalDate - b.status * b.arrivalDate);
-      } else raidList[kid] = [raid];
+      const raids = raidList[kid] || (raidList[kid] = []);
+      raids.push(raid);
+      raids.sort((a, b) => a.status * a.arrivalDate - b.status * b.arrivalDate);
+      raidedTiles.push({ kid, raids });
 
-      callback(raidList[kid]);
+      callback && callback(raids);
     });
-    this.storage.set("raidList", raidList);
-    return raidingVillages;
+    this.storage.save();
+    return { raidingVillages, raidedTiles };
   };
 }
 

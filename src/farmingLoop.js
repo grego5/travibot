@@ -1,31 +1,60 @@
+import { fragments } from "./index.js";
+import fs from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 export function farmingLoop(data) {
-  const { storage, ownId, farmList, rallyManager, tileGetter, villageTroops, goldClub, peaceEndingDate, tribeId } =
-    data;
+  const {
+    storage,
+    ownId,
+    farmList,
+    rallyManager,
+    tileGetter,
+    villageTroops,
+    goldClub,
+    nextStageDate,
+    tribeId,
+    wss,
+    api,
+  } = data;
   const { map, rallyCron, tileList = {}, reports = {}, raidList } = storage.getAll();
   const unitsData = storage.get("tribesData")[tribeId];
   const { createRally } = rallyManager;
   const { updateTiles } = tileGetter;
 
-  const reassignTroops = (raidingVillages) => {
-    for (const did of raidingVillages) {
+  const reassignTroops = (villages) => {
+    const reassigned = villages.map((did) => {
       const { targets } = map[did];
-      const { assign: assignTroops } = villageTroops.get(did);
+      const troopsData = villageTroops.get(did);
+      const { assign: assignTroops } = troopsData;
 
       targets.forEach(({ kid, distance }) => {
         if (tileList[kid].owned) return;
 
         assignTroops({ kid, distance });
       });
-    }
+
+      return { did, troopsData };
+    });
+    return reassigned;
   };
 
+  const now = Date.now();
+  let asyncStatus = 0;
   const rallyQueue = new Map();
   const updateQueue = new Map();
-  let lastUpate = 0;
   let heroTarget = null;
+  let lastTileUpdate = now;
+  let lastStatusUpdate = now;
+  const statusQuery = `query {
+    ${fragments.hero + fragments.troops}
+  }`;
 
   const queueTile = ({ kid, coords, force, callback }) => {
-    if (force) lastUpate = 0;
+    if (force) lastTileUpdate = 0;
     updateQueue.set(kid, {
       coords: coords || tileList[kid].coords,
       callback({ tile, report }) {
@@ -45,25 +74,39 @@ export function farmingLoop(data) {
     });
   };
 
-  const queueRally = ({ rally, callback }) => {
-    const { kid } = rally;
-    const { listId, id } = tileList[kid].villages.find((village) => village.did === rally.did);
-    rallyQueue.set(kid, { id, listId, rally, callback });
-  };
+  wss.setRoute("sendTroops", (data) => {
+    if (data.eventName === "hero") {
+      const { did, kid, coords } = data;
+      heroTarget = { kid, did, coords, ratio: 999 };
+    } else {
+      const { kid, listId, targetId } = data;
+      const rally = createRally(data);
+      rallyQueue.set(kid, { id: targetId, listId, rally });
+    }
+  });
 
   setInterval(async () => {
     const now = Date.now();
+
+    if (now - lastStatusUpdate > 3e5) {
+      const data = await api.graphql({ query: statusQuery, logEvent: "status update" });
+      const { hero, villages } = data.ownPlayer;
+      villageTroops.update({ hero, villages });
+      fs.writeFileSync(__dirname + "/logs/villageTroops.json", JSON.stringify(villageTroops, null, 2), "utf8");
+      lastStatusUpdate = now;
+    }
 
     for (const next of rallyCron) {
       if (next.departure - now > 1000) break;
 
       const { did, troops } = next;
-      const { idleTroops } = villageTroops.get(did);
+      const { idleTroops, hero } = villageTroops.get(did);
 
       troops.forEach((unit) => {
         const available = Math.min(unit.count, idleTroops[unit.id]);
         unit.count = available;
         idleTroops[unit.id] -= available;
+        if (unit.id === "t11") next.hero = hero;
       });
 
       createRally(rallyCron.shift()).dispatch();
@@ -77,6 +120,8 @@ export function farmingLoop(data) {
         if (returnDate <= now && status >= 3) {
           const { idleTroops } = villageTroops.get(origin);
           troops.forEach(({ id, count }) => (idleTroops[id] += count));
+          const reassigned = reassignTroops([origin]);
+          wss.send([{ event: "villageTroops", payload: reassigned }]);
           return false;
         } else return true;
       });
@@ -89,6 +134,8 @@ export function farmingLoop(data) {
         storage.save();
       }
 
+      if (asyncStatus) return;
+
       const currentRaid = activeRaids[0];
 
       // check and update status of the current raid
@@ -96,7 +143,7 @@ export function farmingLoop(data) {
       if (currentRaid && currentRaid.arrivalDate <= now && currentRaid.status < 3) {
         const { coords } = currentRaid;
 
-        lastUpate = 0;
+        lastTileUpdate = 0;
         updateQueue.set(kid, {
           coords,
           callback({ tile, report }) {
@@ -147,10 +194,7 @@ export function farmingLoop(data) {
         const tile = tileList[kid];
         const report = reports[kid] || { scoutDate: 0, timestamp: now, loot: 0 };
 
-        if (!tile) {
-          queueTile({ kid, coords });
-          continue;
-        }
+        if (!raidTroops[kid]) assignTroops({ kid, distance });
 
         if (tile.type === 4) {
           // check occupied oasises every 7 days
@@ -167,11 +211,10 @@ export function farmingLoop(data) {
           continue;
         }
 
-        if (!raidTroops[kid]) assignTroops({ kid, distance });
         const raids = raidList[kid];
-        const raidsCount = raids ? raids.filter((raid) => raid.arrivalDate < now).length : 0;
-        const isBeginer = peaceEndingDate > now && (tile.bonus[0].icon !== "r4" || totalTroops.t1 > 40);
-        const isAdvanced = peaceEndingDate < now;
+        const raidsCount = raids ? raids.filter((raid) => raid.arrivalDate > now).length : 0;
+        const isBeginer = nextStageDate > now && (tile.bonus[0].icon !== "r4" || totalTroops.t1 > 40);
+        const isAdvanced = nextStageDate < now;
 
         if (isBeginer) {
           if (idleTroops.t1 >= 2 && distance <= 9) {
@@ -203,26 +246,29 @@ export function farmingLoop(data) {
           const { eventName, troops, forecast } = raidTroops[kid];
 
           if (eventName) {
-            if ({ raid: 1, hero: 1 }[eventName]) {
-              const { ratio } = forecast;
-              if (!raidTarget || raidTarget.ratio < ratio) raidTarget = { kid, ratio, coords, targetId };
+            const { ratio } = forecast;
+
+            switch (eventName) {
+              case "raid":
+                if (!raidTarget || raidTarget.ratio < ratio) raidTarget = { kid, did, ratio, coords, targetId };
+                break;
+              case "hero":
+                if (!heroTarget || heroTarget.ratio < ratio) heroTarget = { kid, did, ratio, coords };
+                break;
+              default:
+                rallyQueue.set(kid, {
+                  id: targetId,
+                  listId,
+                  rally: createRally({ did, eventName, coords, troops: [...troops] }),
+                });
             }
-
-            if (raidTarget) continue;
-
-            rallyQueue.set(kid, {
-              id: targetId,
-              listId,
-              rally: createRally({ did, eventName, coords, troops: [...troops] }),
-            });
           }
         }
       }
 
       if (raidTarget) {
-        const { kid, targetId, coords } = raidTarget;
+        const { kid, did, targetId, coords } = raidTarget;
         const { eventName, troops } = raidTroops[kid];
-        if (eventName === "hero" && !heroTarget) heroTarget = kid;
 
         rallyQueue.set(kid, {
           id: targetId,
@@ -232,74 +278,93 @@ export function farmingLoop(data) {
       }
     }
 
-    if (updateQueue.size && (now - lastUpate >= 6e4 || updateQueue.size >= 10 || rallyQueue.size)) {
+    if (updateQueue.size && (now - lastTileUpdate >= 6e4 || updateQueue.size >= 10)) {
+      asyncStatus++;
       await updateTiles(updateQueue).then(() => {
         updateQueue.clear();
-        lastUpate = Date.now();
+        lastTileUpdate = Date.now();
+        asyncStatus--;
+      });
+    }
+
+    if (heroTarget) {
+      asyncStatus++;
+      const { did, kid, coords } = heroTarget;
+      const { idleTroops, raidTroops, hero } = villageTroops.get(did);
+      const { eventName, troops } = raidTroops[kid];
+      const rally = createRally({ did, eventName, coords, troops, hero });
+      console.log(`Hero will be sent to ${rally.coords.x} | ${rally.coords.y}`);
+
+      setTimeout(async () => {
+        if (idleTroops.t11 && map[did].autoraid) {
+          idleTroops.t11 = 0;
+          const raids = await rally.dispatch();
+          const reassigned = reassignTroops([did]);
+          wss.send([
+            { event: "villageTroops", payload: reassigned },
+            { event: "raidList", payload: [{ kid, raids }] },
+          ]);
+        }
+        heroTarget = null;
+        asyncStatus--;
       });
     }
 
     if (rallyQueue.size) {
-      if (heroTarget) {
-        const rally = rallyQueue.get(heroTarget).rally;
-        const { idleTroops } = villageTroops.get(rally.did);
-        console.log(`Hero will be sent to ${rally.coords.x} | ${rally.coords.y}`);
-
-        setTimeout(() => {
-          if (idleTroops.t11) {
-            idleTroops.t11 = 0;
-            rally.dispatch().then(() => {
-              heroTarget = null;
-            });
-          }
-        }, 20000);
-
-        rallyQueue.delete(heroTarget);
-        if (!rallyQueue.size) return;
-      }
-
+      asyncStatus++;
       if (goldClub) {
-        farmList.updateSlots({ rallyQueue, villageTroops }).then(async (sortedQueue) => {
-          const raidingVillages = await farmList.send({ rallyQueue, sortedQueue });
-          reassignTroops(raidingVillages);
-          rallyQueue.clear();
-        });
+        const sortedQueue = await farmList.updateSlots({ rallyQueue, villageTroops });
+        const { raidingVillages, raidedTiles } = await farmList.send({ rallyQueue, sortedQueue });
+
+        const reassigned = reassignTroops(raidingVillages);
+        wss.send([
+          { event: "villageTroops", payload: reassigned },
+          { event: "raidList", payload: raidedTiles },
+        ]);
+        rallyQueue.clear();
+        asyncStatus--;
       } else {
         let delay = 0;
-        let completed = 0;
         const raidingVillages = [];
+        const raidedTiles = [];
 
         for (const kid of rallyQueue.keys()) {
-          const { rally, callback } = rallyQueue.get(kid);
-          const { did } = rally;
+          raidedTiles.push(
+            new Promise((res) => {
+              const { rally } = rallyQueue.get(kid);
+              const { did } = rally;
 
-          setTimeout(async () => {
-            const { idleTroops } = villageTroops.get(did);
-            const check = rally.troops.every(({ id, count }) => idleTroops[id] >= count);
+              setTimeout(async () => {
+                const { idleTroops } = villageTroops.get(did);
+                const check = rally.troops.every(({ id, count }) => idleTroops[id] >= count);
 
-            if (check) {
-              rally.troops.forEach(({ id, count }) => (idleTroops[id] -= count));
-              if (!raidingVillages.find((id) => id === did)) raidingVillages.push(did);
-              rally.dispatch().then((raids) => callback && callback(raids));
-            }
+                if (check) {
+                  rally.troops.forEach(({ id, count }) => (idleTroops[id] -= count));
+                  if (!raidingVillages.find((id) => id === did)) raidingVillages.push(did);
+                  const raids = await rally.dispatch();
+                  res({ kid, raids });
+                }
+              }, delay * 500);
+            })
+          );
 
-            completed++;
-
-            if (completed === rallyQueue.size) {
-              rallyQueue.clear();
-              reassignTroops(raidingVillages);
-            }
-          }, delay * 500);
           delay++;
         }
+
+        Promise.all(raidedTiles).then((res) => {
+          rallyQueue.clear();
+          const reassigned = reassignTroops(raidingVillages);
+          wss.send([
+            { event: "villageTroops", payload: reassigned },
+            { event: "raidList", payload: res },
+          ]);
+          asyncStatus--;
+        });
       }
     }
   }, 1000);
 
-  return {
-    queueTile,
-    queueRally,
-  };
+  return { queueTile };
 }
 
 export default farmingLoop;
