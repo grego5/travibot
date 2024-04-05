@@ -257,7 +257,9 @@ export function parseTribesData(tribes) {
       let cost = 0;
       for (const r in trainingCost) cost += trainingCost[r];
 
-      tribesData[tid][id] = { name, icon, attack, idef, cdef, speed, upkeep, reward: upkeep * 160, carry, cost };
+      tribesData[tid][id] = { id, name, icon, attack, idef, cdef, speed, upkeep, reward: upkeep * 160, carry, cost };
+      const scoutId = [, "t4", "t4", "t3"][tid];
+      tribesData[tid].scout = tribesData[tid][scoutId];
     });
     if (tid !== 4) {
       tribesData[tid]["t11"] = {

@@ -25,11 +25,19 @@ import {
 } from "./src/index.js";
 
 dontenv.config();
-const { json } = bodyParser;
 
-const app = express();
-const port = 3000;
 const wss = new WebSocketServer(3001);
+const { json } = bodyParser;
+const app = express();
+app.use(json());
+const port = 3000;
+
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "https://" + process.env.HOSTNAME);
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  next();
+});
 
 const browser = new HttpClient({
   username: process.env.LOGIN,
@@ -74,18 +82,6 @@ const storage = new Storage("store.json", [
   ["raidArrays", {}],
   ["rallyCron", []],
 ]);
-const farmList = new FarmList({ api, storage });
-const rallyManager = new RallyManager({ browser, api, storage });
-const tileGetter = new TileGetter({ browser, api, storage });
-
-app.set("storage", storage);
-app.use(json());
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "https://" + process.env.HOSTNAME);
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  next();
-});
 
 app.post("/rally", (req, res) => {
   const data = req.body;
@@ -99,7 +95,6 @@ app.post("/rally", (req, res) => {
   }
   res.send(JSON.stringify(rallyCron));
 });
-
 app.post("/autoraid", (req, res) => {
   const { did, autoraid } = req.body;
 
@@ -108,30 +103,20 @@ app.post("/autoraid", (req, res) => {
   storage.save();
   res.send(`autoraid ${autoraid ? "enabled" : "disabled"}`);
 });
-
 app.get("/storage", (req, res) => {
   const data = storage.getAll();
   data.villageTroops = app.get("villageTroops").get();
   res.send(JSON.stringify(data));
 });
-
-app.get("/tile", (req, res) => {
-  const { kid } = req.query;
-  if (!kid) res.send("get-tile: No data");
-  const queueTile = app.get("queueTile");
-  queueTile({ kid, callback: (data) => res.send(data), force: 1 });
-});
-
 app.get("/get-village-troops", (req, res) => {
   const villageTroops = app.get("villageTroops");
   const { did } = req.query;
   const data = villageTroops.get(did);
   res.send(JSON.stringify(data));
 });
-
 app.get("/explore", (req, res) => {
   const { did, x, y } = req.query;
-  if (!did) res.send("queueTile: No data");
+  if (!did) res.send("explorer: No data");
 
   mapExplorer({ did, storage, tileGetter, farmList, coords: { x, y }, callback: (data) => res.send(data) });
 });
@@ -140,12 +125,11 @@ app.get("/explore", (req, res) => {
   let pageQuery = fragments.troops + fragments.hero;
   const callbackArray = [];
 
-  if (!storage.get("allTribes")) {
+  if (!storage.get("tribes")) {
     pageQuery += fragments.tribes;
     callbackArray.push(function (data) {
-      const { tribes } = data.bootstrapData;
-      const tribesData = parseTribesData(tribes);
-      storage.set("tribesData", tribesData);
+      const tribes = parseTribesData(data.bootstrapData.tribes);
+      storage.set("tribes", tribes);
     });
   }
 
@@ -164,18 +148,20 @@ app.get("/explore", (req, res) => {
   const data = await api.graphql({ query, callbackArray, logEvent: "init" });
   if (!data) return;
 
+  const raidList = {};
+  const tribes = storage.get("tribes");
+  const map = storage.get("map");
   const { hero, villages, id: ownId, tribeId, goldFeatures } = data.ownPlayer;
   const { time: startDate } = data.statistics.gameWorldProgress.stages[0];
   const nextStageDate = startDate * 1000 + 4.32e8 - 7.2e6;
   const goldClub = !!goldFeatures.goldClub;
 
-  const scoutId = [, "t4", "t4", "t3"][tribeId];
-  rallyManager.setTribe(tribeId, scoutId);
+  const unitsData = tribes[tribeId];
 
-  const map = storage.get("map");
-  const raidList = {};
-  const villageTroops = new TroopSetup({ storage, hero, villages, scoutId, tribeId });
-  // fs.writeFileSync(`${__dirname}/logs/villageTroops.json`, JSON.stringify(villageTroops.get(), null, 2));
+  const tileGetter = new TileGetter({ browser, api, storage, tribes });
+  const villageTroops = new TroopSetup({ storage, hero, villages, unitsData });
+  const rallyManager = new RallyManager({ browser, api, storage, unitsData });
+  const farmList = new FarmList({ api, storage });
 
   villages.forEach((village) => {
     const did = village.id;
@@ -184,23 +170,14 @@ app.get("/explore", (req, res) => {
       map[did] = { targets: [] };
       farmList.getListsFor(village).then((lists) => {
         const list = lists.find((list) => list.name === village.name);
-        if (list) {
-          map[did] = farmList.linkList({ list, village: map[did] });
-          storage.save();
-        }
+        if (list) map[did] = farmList.linkList({ list, village: map[did] });
       });
     }
 
     village.troops.moving.edges.forEach(({ node }) => {
-      const {
-        time,
-        scoutingTarget,
-        units,
-        player,
-        troopEvent: { arrivalTime, type, cellTo, cellFrom },
-      } = node;
-
+      const { time, units, player, troopEvent } = node;
       if (player.id !== ownId) return;
+      const { arrivalTime, type, cellTo, cellFrom } = troopEvent;
 
       const troops = rallyManager.troopsFrom(units);
       const travelTime = (arrivalTime - time) * 1000;
@@ -212,28 +189,16 @@ app.get("/explore", (req, res) => {
         x: type === 9 ? cellFrom.x : cellTo.x,
         y: type === 9 ? cellFrom.y : cellTo.y,
       };
-      const eventName = { [scoutId]: "scout", t11: "hero" }[troops[0].id] || "raid";
+      const eventName = { [unitsData.scout.id]: "scout", t11: "hero" }[troops[0].id] || "raid";
+      const raid = new Raid({ did, coords, eventName, type, travelTime, returnTime, arrivalDate, returnDate, troops });
 
-      const raid = new Raid({
-        did,
-        coords,
-        eventName,
-        type,
-        travelTime,
-        returnTime,
-        arrivalDate,
-        returnDate,
-        troops,
-      });
-
-      const raids = raidList[kid] || [];
+      const raids = raidList[kid] || (raidList[kid] = []);
       raids.push(raid);
       raids.sort((a, b) => {
         const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
         const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
         return dateA - dateB;
       });
-      raidList[kid] = raids;
     });
   });
   storage.set("raidList", raidList);
@@ -245,8 +210,7 @@ app.get("/explore", (req, res) => {
     tileGetter,
     farmList,
     ownId,
-    tribeId,
-    scoutId,
+    unitsData,
     villageTroops,
     villages,
     goldClub,
@@ -254,8 +218,7 @@ app.get("/explore", (req, res) => {
     api,
   };
 
-  const { queueTile } = main(state);
-  app.set("queueTile", queueTile);
+  main(state);
   app.set("villageTroops", villageTroops);
 
   app.listen(port, () => {

@@ -7,7 +7,7 @@ function parseTravelTime(string) {
 }
 
 export default class RallyManager {
-  constructor({ browser, api, storage }) {
+  constructor({ browser, api, storage, unitsData }) {
     browser.addRoutes([
       {
         name: "submitRally",
@@ -24,16 +24,8 @@ export default class RallyManager {
     this.browser = browser;
     this.api = api;
     this.storage = storage;
-    this.tribeId = null;
-    this.scoutId = null;
-    this.unitsData = null;
+    this.unitsData = unitsData;
   }
-
-  setTribe = (tribeId, scoutId) => {
-    this.tribeId = tribeId;
-    this.scoutId = scoutId;
-    this.unitsData = this.storage.get("tribesData")[tribeId];
-  };
 
   heroReturnTime = ({ hero, travelTime }) => {
     const {
@@ -51,11 +43,6 @@ export default class RallyManager {
 
   troopsFrom = (units) => {
     const troops = [];
-
-    if (!this.unitsData) {
-      console.log("Tribe is not set. setTribe(tribeId)");
-      return troops;
-    }
 
     for (const id in units) {
       const count = units[id];
@@ -87,6 +74,11 @@ export default class RallyManager {
     const html = await res.text();
     const dom = new JSDOM(html);
     const form = dom.window.document.getElementById("troopSendForm");
+
+    if (!form) {
+      console.log("dispatch failed", body);
+      return null;
+    }
 
     const confirm = form.querySelector("button.rallyPointConfirm");
     const checksum = confirm.getAttribute("onclick").match(/'([^']+)';/)[1];

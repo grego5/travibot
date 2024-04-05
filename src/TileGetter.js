@@ -1,7 +1,7 @@
 import { JSDOM } from "jsdom";
 
 export default class TileGetter {
-  constructor({ api, browser, storage }) {
+  constructor({ api, browser, storage, tribes }) {
     api.addRoutes([
       {
         name: "tileDetails",
@@ -13,7 +13,7 @@ export default class TileGetter {
     this.api = api;
     this.browser = browser;
     this.storage = storage;
-    this.animals = storage.get("tribesData")[4];
+    this.animals = tribes[4];
     this.tileList = storage.get("tileList");
     this.reports = storage.get("reports");
     this.raidIncome = storage.get("raidIncome") || {

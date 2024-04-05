@@ -3,14 +3,13 @@ const t1 = "t1";
 const t11 = "t11";
 
 export default class TroopSetup {
-  constructor({ storage, hero, villages, scoutId, tribeId }) {
+  constructor({ storage, hero, villages, unitsData }) {
     this.map = storage.get("map");
-    this.scoutId = scoutId;
     this.allRaidArrays = storage.get("raidArrays");
     this.tileList = storage.get("tileList");
     this.reports = storage.get("reports");
-    this.ownTribe = storage.get("tribesData")[tribeId];
     this.hero = hero;
+    this.unitsData = unitsData;
 
     this.villageTroops = villages.reduce((acc, village) => {
       acc[village.id] = this.create(village);
@@ -46,8 +45,6 @@ export default class TroopSetup {
 
   assign = (did, target) => {
     const now = Date.now();
-    const scoutId = this.scoutId;
-    const unitsData = this.ownTribe;
     const { idleTroops, raidTroops, hero } = this.villageTroops[did];
     const { kid, distance } = target;
     const report = this.reports[kid] || { scoutDate: 0, timestamp: now, loot: 0 };
@@ -71,9 +68,9 @@ export default class TroopSetup {
       let required = 0;
 
       for (let i = 1; i < 7; i++) {
-        const unit = unitsData[id];
+        const unit = this.unitsData[id];
         const newId = "t" + i;
-        const newUnit = unitsData[newId];
+        const newUnit = this.unitsData[newId];
         const newRequired = Math.ceil(report.loot / newUnit.carry);
         const isAvaible = idleTroops[newId] >= newRequired;
         const isFaster = newUnit.speed / distance >= 1 && (!id || newUnit.speed > unit.speed);
@@ -82,7 +79,7 @@ export default class TroopSetup {
       }
 
       if (id) {
-        const { name, icon, speed } = unitsData[id];
+        const { name, icon, speed } = this.unitsData[id];
         if (distance / speed < 0.75) {
           data.eventName = "loot";
           troops.push({ id, name, icon, speed, count: Math.min(idleTroops[id], required) });
@@ -199,7 +196,7 @@ export default class TroopSetup {
 
       for (const id in raidArray) {
         const count = Math.min(idleTroops[id], raidArray[id]);
-        const { name, icon, speed, attack, cost, carry } = unitsData[id];
+        const { name, icon, speed, attack, cost, carry } = this.unitsData[id];
 
         if (id !== t11) {
           speed > 8 ? (cavaleryPower += attack * count) : (infantryPower += attack * count);
@@ -226,7 +223,7 @@ export default class TroopSetup {
         });
 
         if (res.resourcesLost / 600 > 2) {
-          const { name, icon, speed, attack, cost, carry } = unitsData[t1];
+          const { name, icon, speed, attack, cost, carry } = this.unitsData[t1];
           const count = idleTroops[t1] >= 1000 ? Math.max(2000, idleTroops[t1]) : Math.ceil(2000 / attack);
 
           if (idleTroops[t1] >= count) {
@@ -278,10 +275,12 @@ export default class TroopSetup {
       }
     }
 
-    if (!troops.length && !scouted && isOldReport && lootSum < 4000 && idleTroops[scoutId]) {
+    const { scout } = this.unitsData;
+
+    if (!troops.length && !scouted && isOldReport && lootSum < 4000 && idleTroops[scout.id]) {
       data.eventName = "scout";
-      const { name, icon, speed } = unitsData[scoutId];
-      troops.push({ id: scoutId, count: 1, name, icon, speed });
+      const { id, name, icon, speed } = this.unitsData.scout;
+      troops.push({ id, count: 1, name, icon, speed });
     }
 
     raidTroops[kid] = data;

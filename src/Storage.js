@@ -14,7 +14,7 @@ class Storage {
       const data = readFileSync(this.storageFile, "utf8");
       this.storage = JSON.parse(data);
       entries.forEach(([key, value]) => {
-        if (!this.storage[key]) storage[key] = value;
+        if (!this.storage[key]) this.storage[key] = value;
       });
     } catch (error) {
       if (error.code === "ENOENT") {
