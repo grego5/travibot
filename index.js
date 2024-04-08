@@ -36,6 +36,7 @@ app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "https://" + process.env.HOSTNAME);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Private-Network", true);
   next();
 });
 
@@ -89,10 +90,8 @@ app.post("/rally", (req, res) => {
 
   const rallyCron = storage.get("rallyCron");
   rallyCron.push(data);
-  rallyCron.sort((a, b) => a.departure - b.departure);
-  if (data.departure - Date.now() > 10000) {
-    storage.save();
-  }
+  rallyCron.sort((a, b) => a.departDate - b.departDate);
+  storage.save();
   res.send(JSON.stringify(rallyCron));
 });
 app.post("/autoraid", (req, res) => {
@@ -119,6 +118,31 @@ app.get("/explore", (req, res) => {
   if (!did) res.send("explorer: No data");
 
   mapExplorer({ did, storage, tileGetter, farmList, coords: { x, y }, callback: (data) => res.send(data) });
+});
+wss.setRoute("rallyCron", ({ action, cronJob }, client) => {
+  const rallyCron = storage.get("rallyCron");
+  switch (action) {
+    case "get":
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify(rallyCron));
+      }
+      return;
+    case "add":
+      rallyCron.push(cronJob);
+      break;
+    case "update":
+      const update = rallyCron.find(({ key }) => key === cronJob.key);
+      if (!update) throw new Error(`cronJob ${cronJob.key} to update not found`);
+      Object.assign(update, cronJob);
+      break;
+    case "remove":
+      const i = rallyCron.findIndex(({ key }) => key === cronJob.key);
+      if (i === -1) throw new Error(`cronJob ${cronJob.key} to remove not found`);
+      rallyCron.splice(i, 1);
+  }
+
+  rallyCron.sort((a, b) => a.departDate - b.departDate);
+  storage.save();
 });
 
 (async () => {
@@ -177,26 +201,42 @@ app.get("/explore", (req, res) => {
     village.troops.moving.edges.forEach(({ node }) => {
       const { time, units, player, troopEvent } = node;
       if (player.id !== ownId) return;
-      const { arrivalTime, type, cellTo, cellFrom } = troopEvent;
+      const { arrivalTime, type: eventType, cellTo, cellFrom } = troopEvent;
 
       const troops = rallyManager.troopsFrom(units);
       const travelTime = (arrivalTime - time) * 1000;
       const returnTime = units.t11 ? rallyManager.heroReturnTime({ hero, travelTime }) : travelTime;
-      const arrivalDate = type === 9 ? arrivalTime * 1000 - travelTime : arrivalTime * 1000;
-      const returnDate = type === 9 ? arrivalTime * 1000 : type === 5 ? 0 : arrivalDate + travelTime;
-      const kid = type === 9 ? cellFrom.id : cellTo.id;
-      const coords = {
-        x: type === 9 ? cellFrom.x : cellTo.x,
-        y: type === 9 ? cellFrom.y : cellTo.y,
+      const arrivalDate = eventType === 9 ? arrivalTime * 1000 - travelTime : arrivalTime * 1000;
+      const returnDate = eventType === 9 ? arrivalTime * 1000 : eventType === 5 ? 0 : arrivalDate + travelTime;
+      const kid = eventType === 9 ? cellFrom.id : cellTo.id;
+      const to = {
+        x: eventType === 9 ? cellFrom.x : cellTo.x,
+        y: eventType === 9 ? cellFrom.y : cellTo.y,
+      };
+      const from = {
+        x: eventType === 9 ? cellTo.x : cellFrom.x,
+        y: eventType === 9 ? cellTo.y : cellFrom.y,
+        name: eventType === 9 ? cellTo.village.name : cellFrom.village.name,
       };
       const eventName = { [unitsData.scout.id]: "scout", t11: "hero" }[troops[0].id] || "raid";
-      const raid = new Raid({ did, coords, eventName, type, travelTime, returnTime, arrivalDate, returnDate, troops });
+      const raid = new Raid({
+        did,
+        from,
+        to,
+        eventName,
+        eventType,
+        travelTime,
+        returnTime,
+        arrivalDate,
+        returnDate,
+        troops,
+      });
 
       const raids = raidList[kid] || (raidList[kid] = []);
       raids.push(raid);
       raids.sort((a, b) => {
-        const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
-        const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
+        const dateA = a.eventType === 9 ? a.returnDate : a.arrivalDate;
+        const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
         return dateA - dateB;
       });
     });

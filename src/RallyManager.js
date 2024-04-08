@@ -21,10 +21,14 @@ export default class RallyManager {
       },
     ]);
 
+    api.addRoutes([{ name: "sendTroops", path: "/api/v1/troop/send", methods: ["PUT", "POST"] }]);
+
     this.browser = browser;
     this.api = api;
     this.storage = storage;
     this.unitsData = unitsData;
+    this.raidedTiles = [];
+    this.raidingVillages = [];
   }
 
   heroReturnTime = ({ hero, travelTime }) => {
@@ -53,24 +57,40 @@ export default class RallyManager {
     return troops;
   };
 
-  createRally = ({ did, coords, units = {}, troops, eventName, eventType = 4, hero }) => {
+  createRally = ({ did, from, to, eventName, eventType = 4, troops, units, hero, catapultTargets = [] }) => {
+    const _units =
+      units ||
+      troops.reduce((units, { id, count }) => {
+        units[id] = count;
+        return units;
+      }, {});
     const _troops = troops || this.troopsFrom(units);
-
-    const body = `eventType=${eventType}&x=${coords.x}&y=${coords.y}${_troops.reduce((acc, { id, count }) => {
-      acc += `&troop%5B${id}%5D=${count}`;
-      units[id] = count;
-      return acc;
-    }, "")}&ok=ok`;
-
-    const rally = { body, did, coords, eventName, troops: _troops, units, hero };
-    rally.dispatch = () => this.dispatchRally(rally);
+    const scoutTarget = eventName === "scout" ? 1 : 0;
+    const rally = {
+      did,
+      from,
+      to,
+      eventName,
+      eventType,
+      troops: _troops,
+      units: _units,
+      hero,
+      catapultTargets,
+      scoutTarget,
+    };
+    rally.dispatch = () => this.sendTroops(rally);
     return rally;
   };
 
   dispatchRally = async (rally) => {
-    const { body, did, coords, eventName, eventType, troops, units, catapultTargets = [], hero } = rally;
+    const { did, from, to, eventName, eventType, troops, units, hero, catapultTargets = [] } = rally;
 
-    const res = await this.browser.submitRally.POST({ body, params: [["newdid", did]] });
+    const body = `eventType=${eventType}&x=${to.x}&y=${to.y}${troops.reduce(
+      (acc, { id, count }) => (acc += `&troop%5B${id}%5D=${count}`),
+      ""
+    )}&ok=ok`;
+
+    const res = await this.browser.submitRally.post({ body, params: [["newdid", did]] });
     const html = await res.text();
     const dom = new JSDOM(html);
     const form = dom.window.document.getElementById("troopSendForm");
@@ -92,26 +112,92 @@ export default class RallyManager {
       if (catapultTargets[1]) params += `&troops[0][catapultTarget2]=${catapultTargets[1]}`;
     }
 
-    const kid = xy2id(coords);
-    this.browser.submitRally.POST({
+    const kid = xy2id(to);
+    this.browser.submitRally.post({
       body: params,
-      logEvent: JSON.stringify(units) + ` => (${coords.x}|${coords.y}) (${kid})`,
+      logEvent: JSON.stringify(units) + ` => (${to.x}|${to.y}) (${kid})`,
     });
 
     const travelTime = parseTravelTime(form.querySelector("#in").textContent);
     const returnTime = hero ? this.heroReturnTime({ hero, travelTime }) : travelTime;
 
-    const raid = new Raid({ did, coords, eventName, eventType, travelTime, returnTime, troops });
+    const raid = new Raid({ did, from, to, eventName, eventType, travelTime, returnTime, troops });
     const raidList = this.storage.get("raidList");
     const raids = raidList[kid] || (raidList[kid] = []);
     raids.push(raid);
     raids.sort((a, b) => {
-      const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
-      const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
+      const dateA = a.eventType === 9 ? a.returnDate : a.arrivalDate;
+      const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
       return dateA - dateB;
     });
+    this.raidingVillages.find((v) => v.did === did) || this.raidingVillages.push(did);
+    this.raidedTiles.find((t) => {
+      if (t.kid === kid) {
+        t.raids = raids;
+        return true;
+      }
+    }) || this.raidedTiles.push({ kid, raids });
     this.storage.save();
 
     return raids;
   };
+
+  async sendTroops(rally) {
+    const { did, from, to, eventName, scoutTarget, eventType, units, troops, hero, catapultTargets } = rally;
+    const kid = xy2id(to);
+    catapultTargets.forEach((target, i) => (units[`catapultTarget${i + 1}`] = target));
+    if (scoutTarget) units.scoutTarget = scoutTarget;
+    units.villageId = did;
+
+    const body = { action: "troopsSend", targetMapId: kid, eventType, troops: [units] };
+
+    try {
+      const { headers } = await this.api.sendTroops.put({ body });
+
+      const res = await this.api.sendTroops.post({
+        body,
+        logEvent: `${JSON.stringify(units)} ${eventName} (${to.x}|${to.y}) (${kid})`,
+        headers: {
+          "X-Nonce": headers.get("X-Nonce"),
+        },
+      });
+      const data = await res.json();
+      const { timeArrive, timeStart, arrivalIn } = data.troops[0];
+      const travelTime = arrivalIn * 1000;
+      const raid = new Raid({
+        did,
+        from,
+        to,
+        eventName,
+        eventType,
+        travelTime,
+        returnTime: hero ? this.heroReturnTime({ hero, travelTime }) : travelTime,
+        departDate: timeStart * 1000,
+        arrivalDate: timeArrive * 1000,
+        troops,
+      });
+
+      const raidList = this.storage.get("raidList");
+      const raids = raidList[kid] || (raidList[kid] = []);
+      raids.push(raid);
+      raids.sort((a, b) => {
+        const dateA = a.eventType === 9 ? a.returnDate : a.arrivalDate;
+        const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
+        return dateA - dateB;
+      });
+      this.raidingVillages.find((v) => v.did === did) || this.raidingVillages.push(did);
+      this.raidedTiles.find((t) => {
+        if (t.kid === kid) {
+          t.raids = raids;
+          return true;
+        }
+      }) || this.raidedTiles.push({ kid, raids });
+      this.storage.save();
+
+      return raids;
+    } catch (error) {
+      console.log(error);
+      return;
+    }
+  }
 }

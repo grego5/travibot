@@ -22,7 +22,7 @@ export class HttpClient {
         throw new Error(`Property "${name}" already exist. Specify a different route name`);
       }
       this[name] = methods.reduce((acc, method) => {
-        acc[method] = ({ referrer, body, headers, params: userParams = [], logEvent }) =>
+        acc[method.toLowerCase()] = ({ referrer, body, headers, params: userParams = [], logEvent }) =>
           this.run({
             pathname: path,
             referrer,
@@ -128,7 +128,7 @@ export class HttpClient {
         await this.login();
       }
     }
-    const count = retry ? ++retry.count : 0;
+    let count = retry ? ++retry.count : 0;
     const paramString = params.reduce((acc, [key, val]) => (acc += `${key}=${val}&`), "?").slice(0, -1);
     const url = retry ? retry.url : `https://${this.hostname + pathname + paramString}`;
 
@@ -148,18 +148,24 @@ export class HttpClient {
     try {
       const res = await fetch(url, config);
 
-      if (res.status === 400) throw new Error(`HTTP error! Status: ${res.status}, ${res.statusText}`);
+      if (res.status === 400) {
+        console.log(config);
+        count = 3;
+        throw new Error(`HTTP error! Status: ${res.status}, ${res.statusText}`);
+      }
 
-      if (res.status === 401)
+      if (res.status === 401) {
+        this.tokenDate = now;
+        await this.login();
         throw new Error(`HTTP error! Status: ${res.status}, ${res.statusText}. Duration: ${now - this.tokenDate}`);
+      }
 
       if (!res.ok) throw new Error(`HTTP error! Status: ${res.status}, ${res.statusText}`);
 
       return res;
     } catch (error) {
-      console.log(config);
-      console.log(error.message);
-      if (count < 2) return this.run({ retry: { url, config, count, logEvent: "retry" } });
+      console.log(error);
+      if (count < 2) return this.run({ retry: { url, config, count }, logEvent: "retry" });
       else throw error;
     }
   };

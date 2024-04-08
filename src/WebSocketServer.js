@@ -5,16 +5,13 @@ export default class WebSocketServer {
     const wss = new WebSocket.Server({ port });
     this.clients = wss.clients;
     this.routes = new Map();
-    const process = ({ event, payload }) => {
-      const callback = this.routes.get(event);
-      callback(payload);
-    };
 
     wss.on("connection", (ws) => {
       ws.onmessage = (message) => {
         try {
-          const data = JSON.parse(message.data);
-          Array.isArray(data) ? data.forEach((data) => process(data)) : process(data);
+          const { event, payload } = JSON.parse(message.data);
+          const callback = this.routes.get(event);
+          callback(payload, ws);
         } catch (error) {
           console.log("Unable to parse websocket message.", error.message);
         }

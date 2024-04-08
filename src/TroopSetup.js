@@ -11,13 +11,13 @@ export default class TroopSetup {
     this.hero = hero;
     this.unitsData = unitsData;
 
-    this.villageTroops = villages.reduce((acc, village) => {
+    this.villages = villages.reduce((acc, village) => {
       acc[village.id] = this.create(village);
       return acc;
     }, {});
   }
 
-  get = (did) => (did ? this.villageTroops[did] : this.villageTroops);
+  get = (did) => (did ? this.villages[did] : this.villages);
 
   update = ({ hero, villages }) => {
     this.hero = hero;
@@ -27,14 +27,15 @@ export default class TroopSetup {
       const { targets } = this.map[village.id];
       targets.forEach((target) => currentData.assign(target));
     });
-    return this.villageTroops;
+    return this.villages;
   };
 
   create(village) {
-    const { id: did, name, troops, ownTroops } = village;
+    const { id: did, name, x, y, troops, ownTroops } = village;
     return {
-      name,
       did,
+      name,
+      coords: { x, y },
       idleTroops: troops.ownTroopsAtTown.units,
       totalTroops: ownTroops.units,
       raidTroops: {},
@@ -45,11 +46,11 @@ export default class TroopSetup {
 
   assign = (did, target) => {
     const now = Date.now();
-    const { idleTroops, raidTroops, hero } = this.villageTroops[did];
+    const { idleTroops, raidTroops, hero } = this.villages[did];
     const { kid, distance } = target;
     const report = this.reports[kid] || { scoutDate: 0, timestamp: now, loot: 0 };
     const { defense, guards } = this.tileList[kid];
-    const { reward, idef, cdef, ratio } = defense;
+    const { reward, idef, cdef } = defense;
     const raidArray = this.allRaidArrays[did];
     const isOldReport = now - report.timestamp > 2.16e7; // 6 hours
     const scouted = report.scoutDate === report.timestamp && now - report.timestamp < 2.16e7;

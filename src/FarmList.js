@@ -63,7 +63,7 @@ class FarmList {
       defaultUnits: { ...this.units, t1: 1 },
     };
     try {
-      const res = await this.api.farmList.GET({ body: newList, logEvent: "Create farmlist" });
+      const res = await this.api.farmList.get({ body: newList, logEvent: "Create farmlist" });
 
       if (!res.ok) {
         const { error, message } = await res.json();
@@ -102,7 +102,7 @@ class FarmList {
       }),
     };
 
-    await this.api.farmListSlot.POST({ body: farmSlots, logEvent: "Create farmlist slots" });
+    await this.api.farmListSlot.post({ body: farmSlots, logEvent: "Create farmlist slots" });
 
     return true;
   };
@@ -168,12 +168,12 @@ class FarmList {
 
     deleteEntries.forEach((key) => rallyQueue.delete(key));
 
-    await this.api.farmListSlot.PUT({ slots, logEvent: "Update farmlist slots" });
+    await this.api.farmListSlot.put({ slots, logEvent: "Update farmlist slots" });
 
     return sortedQueue;
   };
 
-  send = async ({ sortedQueue, rallyQueue }) => {
+  send = async ({ sortedQueue, rallyQueue, raidingVillages = [], raidedTiles = [] }) => {
     // refactor listId and prep data with iterator
 
     const farmListSend = {
@@ -181,7 +181,7 @@ class FarmList {
       lists: sortedQueue,
     };
 
-    await this.api.farmListSend.POST({ body: farmListSend, logEvent: "Send farmlist" }).then(async (res) => {
+    await this.api.farmListSend.post({ body: farmListSend, logEvent: "Send farmlist" }).then(async (res) => {
       const { lists } = await res.json();
 
       lists.forEach(({ error, id, targets }) => {
@@ -201,26 +201,27 @@ class FarmList {
     const data = await graphql({ query });
     const now = Date.now();
     const raidList = this.storage.get("raidList");
-    const raidingVillages = [];
-    const raidedTiles = [];
 
-    rallyQueue.forEach(({ id, rally, callback }, kid) => {
+    rallyQueue.forEach(({ id, rally }, kid) => {
       const { nextAttackAt } = data[`s${id}`];
       const travelTime = parseInt(nextAttackAt + "000") - now;
-      const { eventName, troops, did } = rally;
-      const raid = new Raid({ did, eventName, travelTime, returnTime: travelTime, troops });
+      const { eventName, eventType, troops, did, to, from } = rally;
+      const raid = new Raid({ did, to, from, eventName, eventType, travelTime, returnTime: travelTime, troops });
       if (!raidingVillages.find((id) => id === did)) raidingVillages.push(did);
 
       const raids = raidList[kid] || (raidList[kid] = []);
       raids.push(raid);
       raids.sort((a, b) => {
-        const dateA = a.type === 9 ? a.returnDate : a.arrivalDate;
-        const dateB = b.type === 9 ? b.returnDate : b.arrivalDate;
+        const dateA = a.eventType === 9 ? a.returnDate : a.arrivalDate;
+        const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
         return dateA - dateB;
       });
-      raidedTiles.push({ kid, raids });
-
-      callback && callback(raids);
+      raidedTiles.find((t) => {
+        if (t.kid === kid) {
+          t.raids = raids;
+          return true;
+        }
+      }) || raidedTiles.push({ kid, raids });
     });
     this.storage.save();
     return { raidingVillages, raidedTiles };

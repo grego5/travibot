@@ -25,7 +25,7 @@ export default class TileGetter {
 
   getdoc = async (x, y) => {
     try {
-      const res = await this.api.tileDetails.POST({
+      const res = await this.api.tileDetails.post({
         referrer: `/karte.php?x=-${x}&y=${y}`,
         body: { x, y },
         method: "POST",
