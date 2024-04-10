@@ -1,5 +1,5 @@
 import { Raid, xy2id } from "./index.js";
-import { JSDOM } from "jsdom";
+// import { JSDOM } from "jsdom";
 
 function parseTravelTime(string) {
   const digits = string.split(" ")[1].split(":");
@@ -57,33 +57,14 @@ export default class RallyManager {
     return troops;
   };
 
-  createRally = ({ did, from, to, eventName, eventType = 4, troops, units, hero, catapultTargets = [] }) => {
-    const _units =
-      units ||
-      troops.reduce((units, { id, count }) => {
-        units[id] = count;
-        return units;
-      }, {});
-    const _troops = troops || this.troopsFrom(units);
-    const scoutTarget = eventName === "scout" ? 1 : 0;
-    const rally = {
-      did,
-      from,
-      to,
-      eventName,
-      eventType,
-      troops: _troops,
-      units: _units,
-      hero,
-      catapultTargets,
-      scoutTarget,
-    };
+  createRally = ({ did, from, to, eventName, eventType = 4, units, hero, catapultTargets = [], scoutTarget }) => {
+    const rally = { did, from, to, eventName, eventType, units, hero, catapultTargets, scoutTarget };
     rally.dispatch = () => this.sendTroops(rally);
     return rally;
   };
-
-  dispatchRally = async (rally) => {
-    const { did, from, to, eventName, eventType, troops, units, hero, catapultTargets = [] } = rally;
+  /*
+  dispatchRally = async (rally) => { // need fix for troops
+    const { did, from, to, eventName, eventType, units, hero, catapultTargets = [] } = rally;
 
     const body = `eventType=${eventType}&x=${to.x}&y=${to.y}${troops.reduce(
       (acc, { id, count }) => (acc += `&troop%5B${id}%5D=${count}`),
@@ -141,15 +122,15 @@ export default class RallyManager {
 
     return raids;
   };
-
+*/
   async sendTroops(rally) {
-    const { did, from, to, eventName, scoutTarget, eventType, units, troops, hero, catapultTargets } = rally;
+    const { did, from, to, eventName, scoutTarget, eventType, units, hero, catapultTargets } = rally;
     const kid = xy2id(to);
-    catapultTargets.forEach((target, i) => (units[`catapultTarget${i + 1}`] = target));
-    if (scoutTarget) units.scoutTarget = scoutTarget;
-    units.villageId = did;
+    const troops = { ...units, villageId: did };
+    catapultTargets.forEach((target, i) => (troops[`catapultTarget${i + 1}`] = target));
+    if (scoutTarget) troops.scoutTarget = scoutTarget;
 
-    const body = { action: "troopsSend", targetMapId: kid, eventType, troops: [units] };
+    const body = { action: "troopsSend", targetMapId: kid, eventType, troops: [troops] };
 
     try {
       const { headers } = await this.api.sendTroops.put({ body });
@@ -174,7 +155,7 @@ export default class RallyManager {
         returnTime: hero ? this.heroReturnTime({ hero, travelTime }) : travelTime,
         departDate: timeStart * 1000,
         arrivalDate: timeArrive * 1000,
-        troops,
+        units,
       });
 
       const raidList = this.storage.get("raidList");
@@ -194,7 +175,7 @@ export default class RallyManager {
       }) || this.raidedTiles.push({ kid, raids });
       this.storage.save();
 
-      return raids;
+      return raid;
     } catch (error) {
       console.log(error);
       return;

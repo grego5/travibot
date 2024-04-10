@@ -104,7 +104,7 @@ app.post("/autoraid", (req, res) => {
 });
 app.get("/storage", (req, res) => {
   const data = storage.getAll();
-  data.villageTroops = app.get("villageTroops").get();
+  data.villageTroops = app.get("villageTroops").getAll();
   res.send(JSON.stringify(data));
 });
 app.get("/get-village-troops", (req, res) => {
@@ -119,7 +119,7 @@ app.get("/explore", (req, res) => {
 
   mapExplorer({ did, storage, tileGetter, farmList, coords: { x, y }, callback: (data) => res.send(data) });
 });
-wss.setRoute("rallyCron", ({ action, cronJob }, client) => {
+wss.setRoute("rallyCron", ({ action, troopsAction }, client) => {
   const rallyCron = storage.get("rallyCron");
   switch (action) {
     case "get":
@@ -128,16 +128,16 @@ wss.setRoute("rallyCron", ({ action, cronJob }, client) => {
       }
       return;
     case "add":
-      rallyCron.push(cronJob);
+      rallyCron.push(troopsAction);
       break;
     case "update":
-      const update = rallyCron.find(({ key }) => key === cronJob.key);
-      if (!update) throw new Error(`cronJob ${cronJob.key} to update not found`);
-      Object.assign(update, cronJob);
+      const update = rallyCron.find(({ key }) => key === troopsAction.key);
+      if (!update) throw new Error(`troopsAction ${troopsAction.key} to update not found`);
+      Object.assign(update, troopsAction);
       break;
     case "remove":
-      const i = rallyCron.findIndex(({ key }) => key === cronJob.key);
-      if (i === -1) throw new Error(`cronJob ${cronJob.key} to remove not found`);
+      const i = rallyCron.findIndex(({ key }) => key === troopsAction.key);
+      if (i === -1) throw new Error(`troopsAction ${troopsAction.key} to remove not found`);
       rallyCron.splice(i, 1);
   }
 
@@ -183,9 +183,9 @@ wss.setRoute("rallyCron", ({ action, cronJob }, client) => {
   const unitsData = tribes[tribeId];
 
   const tileGetter = new TileGetter({ browser, api, storage, tribes });
-  const villageTroops = new TroopSetup({ storage, hero, villages, unitsData });
   const rallyManager = new RallyManager({ browser, api, storage, unitsData });
   const farmList = new FarmList({ api, storage });
+  hero.idleSince = 0;
 
   villages.forEach((village) => {
     const did = village.id;
@@ -203,6 +203,7 @@ wss.setRoute("rallyCron", ({ action, cronJob }, client) => {
       if (player.id !== ownId) return;
       const { arrivalTime, type: eventType, cellTo, cellFrom } = troopEvent;
 
+      for (const id in units) if (!units[id]) delete units[id];
       const troops = rallyManager.troopsFrom(units);
       const travelTime = (arrivalTime - time) * 1000;
       const returnTime = units.t11 ? rallyManager.heroReturnTime({ hero, travelTime }) : travelTime;
@@ -229,7 +230,7 @@ wss.setRoute("rallyCron", ({ action, cronJob }, client) => {
         returnTime,
         arrivalDate,
         returnDate,
-        troops,
+        units,
       });
 
       const raids = raidList[kid] || (raidList[kid] = []);
@@ -239,9 +240,14 @@ wss.setRoute("rallyCron", ({ action, cronJob }, client) => {
         const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
         return dateA - dateB;
       });
+
+      if (units.t11) hero.idleSince = returnDate;
     });
   });
+
   storage.set("raidList", raidList);
+
+  const villageTroops = new TroopSetup({ storage, hero, villages, unitsData });
 
   const state = {
     storage,

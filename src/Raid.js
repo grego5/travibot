@@ -1,22 +1,12 @@
 export default class Raid {
-  constructor({
-    did,
-    from,
-    to,
-    eventName = "",
-    eventType = 4,
-    travelTime,
-    returnTime,
-    departDate,
-    arrivalDate,
-    returnDate,
-    troops,
-  }) {
+  constructor(props) {
+    const { did, from, to, eventName, eventType, travelTime, returnTime, departDate, arrivalDate, returnDate, units } =
+      props;
     this.did = did;
     this.from = from;
     this.to = to;
-    this.eventType = eventType;
-    this.eventName = eventName;
+    this.eventType = eventType || 4;
+    this.eventName = eventName || "";
     this.travelTime = travelTime;
     this.departDate = departDate
       ? departDate
@@ -27,8 +17,8 @@ export default class Raid {
       : Date.now();
     this.arrivalDate = arrivalDate ? arrivalDate : this.departDate + travelTime;
     this.returnDate = returnDate ? returnDate : this.arrivalDate + (eventType === 5 ? 0 : returnTime);
-    this.troops = troops;
+    this.units = units;
     this.recall = new Date(this.arrivalDate - (this.arrivalDate % 10000)).toLocaleTimeString("en-GB");
-    this.recall += troops.reduce((acc, { id, count }) => (acc += `:${id}:${count}`), "");
+    for (const id in units) this.recall += `:${id}:${units[id]}`;
   }
 }

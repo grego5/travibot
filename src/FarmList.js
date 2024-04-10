@@ -134,23 +134,19 @@ class FarmList {
     const deleteEntries = [];
 
     rallyQueue.forEach(({ id, listId, rally }, kid) => {
-      const { idleTroops } = villageTroops.get(rally.did);
-      const check = rally.troops.every(({ id, count }) => idleTroops[id] >= count);
+      const { did, units } = rally;
+      const { idleUnits } = villageTroops.get(did);
+      const check = () => {
+        for (const id in units) if (idleUnits[id] < units[id]) return false;
+        return true;
+      };
 
-      if (!check) {
+      if (!check()) {
         deleteEntries.push(kid);
-
         return;
       }
 
-      const units = rally.troops.reduce(
-        (units, { id, count }) => {
-          idleTroops[id] -= count;
-          units[id] = count;
-          return units;
-        },
-        { ...this.units }
-      );
+      for (const id in units) idleUnits[id] -= units[id];
 
       if (listId in listIndex) {
         sortedQueue[listIndex[listId]].targets.push(id);
@@ -162,7 +158,7 @@ class FarmList {
         active: true,
         id,
         listId,
-        units,
+        units: { ...this.units, ...units },
       });
     });
 
@@ -173,7 +169,7 @@ class FarmList {
     return sortedQueue;
   };
 
-  send = async ({ sortedQueue, rallyQueue, raidingVillages = [], raidedTiles = [] }) => {
+  send = async ({ sortedQueue, rallyQueue, rallyManager }) => {
     // refactor listId and prep data with iterator
 
     const farmListSend = {
@@ -201,12 +197,13 @@ class FarmList {
     const data = await graphql({ query });
     const now = Date.now();
     const raidList = this.storage.get("raidList");
+    const { raidingVillages, raidedTiles } = rallyManager;
 
     rallyQueue.forEach(({ id, rally }, kid) => {
       const { nextAttackAt } = data[`s${id}`];
       const travelTime = parseInt(nextAttackAt + "000") - now;
-      const { eventName, eventType, troops, did, to, from } = rally;
-      const raid = new Raid({ did, to, from, eventName, eventType, travelTime, returnTime: travelTime, troops });
+      const { eventName, eventType, units, did, to, from } = rally;
+      const raid = new Raid({ did, to, from, eventName, eventType, travelTime, returnTime: travelTime, units });
       if (!raidingVillages.find((id) => id === did)) raidingVillages.push(did);
 
       const raids = raidList[kid] || (raidList[kid] = []);
@@ -224,7 +221,6 @@ class FarmList {
       }) || raidedTiles.push({ kid, raids });
     });
     this.storage.save();
-    return { raidingVillages, raidedTiles };
   };
 }
 

@@ -10,43 +10,37 @@ export default class TroopSetup {
     this.reports = storage.get("reports");
     this.hero = hero;
     this.unitsData = unitsData;
-
-    this.villages = villages.reduce((acc, village) => {
-      acc[village.id] = this.create(village);
-      return acc;
-    }, {});
+    this.villages = {};
+    this.villages = this.update({ hero, villages });
   }
 
-  get = (did) => (did ? this.villages[did] : this.villages);
+  get = (did) => this.villages[did] || (this.villages[did] = {});
+  getAll = () => this.villages;
 
   update = ({ hero, villages }) => {
+    hero.idleSince = this.hero.idleSince;
     this.hero = hero;
     villages.forEach((village) => {
-      const currentData = this.get(village.id) || {};
-      Object.assign(currentData, this.create(village));
+      const { id: did, name, x, y, troops } = village;
+      const troopsData = {
+        did,
+        name,
+        coords: { x, y },
+        idleUnits: troops.ownTroopsAtTown.units,
+        raidUnits: {},
+        hero: this.hero.homeVillage.id === did ? this.hero : null,
+        assign: (target) => this.assign(did, target),
+      };
+      Object.assign(this.get(village.id), troopsData);
       const { targets } = this.map[village.id];
-      targets.forEach((target) => currentData.assign(target));
+      targets.forEach((target) => troopsData.assign(target));
     });
     return this.villages;
   };
 
-  create(village) {
-    const { id: did, name, x, y, troops, ownTroops } = village;
-    return {
-      did,
-      name,
-      coords: { x, y },
-      idleTroops: troops.ownTroopsAtTown.units,
-      totalTroops: ownTroops.units,
-      raidTroops: {},
-      hero: this.hero.homeVillage.id === did ? this.hero : null,
-      assign: (target) => this.assign(did, target),
-    };
-  }
-
   assign = (did, target) => {
     const now = Date.now();
-    const { idleTroops, raidTroops, hero } = this.villages[did];
+    const { idleUnits, raidUnits, hero } = this.villages[did];
     const { kid, distance } = target;
     const report = this.reports[kid] || { scoutDate: 0, timestamp: now, loot: 0 };
     const { defense, guards } = this.tileList[kid];
@@ -57,34 +51,30 @@ export default class TroopSetup {
     const lootSum = reward + report.loot;
     const totalToDistance = lootSum / distance;
 
-    const troops = [];
     const data = {
-      troops,
+      units: {},
       forecast: {},
       eventName: "",
     };
 
-    if (!guards.length && scouted && totalToDistance >= 100 && lootSum > 500) {
+    if (!guards.length && scouted && totalToDistance >= 100) {
       let id = null;
       let required = 0;
 
       for (let i = 1; i < 7; i++) {
         const unit = this.unitsData[id];
-        const newId = "t" + i;
+        const newId = "t" + String(i);
         const newUnit = this.unitsData[newId];
         const newRequired = Math.ceil(report.loot / newUnit.carry);
-        const isAvaible = idleTroops[newId] >= newRequired;
-        const isFaster = newUnit.speed / distance >= 1 && (!id || newUnit.speed > unit.speed);
+        const isAvaible = idleUnits[newId] >= newRequired;
+        const isFaster = newUnit.speed / distance >= 0.8 && (!id || newUnit.speed > unit.speed);
 
         if (isAvaible && isFaster) (id = newId), (required = newRequired);
       }
 
       if (id) {
-        const { name, icon, speed } = this.unitsData[id];
-        if (distance / speed < 0.75) {
-          data.eventName = "loot";
-          troops.push({ id, name, icon, speed, count: Math.min(idleTroops[id], required) });
-        }
+        data.eventName = "loot";
+        data.units[id] = Math.min(idleUnits[id], required);
       }
     }
 
@@ -151,7 +141,6 @@ export default class TroopSetup {
       const unmetConditions = [
         { check: bounty > 2000, reason: `bounty is low ${bounty}` },
         { check: percetLoss <= 80, reason: `loss is high ${percetLoss}` },
-        { check: bountyToLoss >= 500, reason: `bounty/hp is low ${bountyToLoss}` },
         { check: xpToLoss >= minXpToLoss, reason: `xp/loss is low ${xpToLoss}, min ${minXpToLoss}` },
         { check: isMounted === mountedRaid, reason: `hero is ${isMounted ? "mounted" : "afoot"}` },
         { check: hero.level < 40, reason: "hero level is high" },
@@ -169,35 +158,29 @@ export default class TroopSetup {
         xpToLoss,
         bounty,
         bountyTime,
-        bountyToLoss,
         healthLoss: Math.round(healthLoss),
         percetLoss,
         alive,
         carriers: [],
-        ratio: Math.trunc(healthLoss > 2 ? (bounty / (percetLoss * time) + bountyTime * 0.3) / 100 : bountyTime / 100),
+        ratio: Math.trunc(healthLoss > 2 ? (bounty / (percetLoss * time) + bountyTime * 0.4) / 100 : bountyTime / 100),
       };
 
-      if (!data.eventName && ready && idleTroops.t11) {
+      if (!data.eventName && ready && idleUnits.t11) {
         data.eventName = "hero";
-        troops.push({
-          id: t11,
-          name: "Hero",
-          icon: "uhero",
-          speed,
-          count: 1,
-        });
+        data.units.t11 = 1;
       }
     }
 
-    if (!troops.length && raidArray && Object.keys(raidArray).length) {
+    if (!data.eventName && raidArray) {
       let infantryPower = 0;
       let cavaleryPower = 0;
       let raidSpeed = 100;
       let raidCarry = 0;
 
       for (const id in raidArray) {
-        const count = Math.min(idleTroops[id], raidArray[id]);
+        const count = Math.min(idleUnits[id], raidArray[id]);
         const { name, icon, speed, attack, cost, carry } = this.unitsData[id];
+        const troops = [];
 
         if (id !== t11) {
           speed > 8 ? (cavaleryPower += attack * count) : (infantryPower += attack * count);
@@ -225,9 +208,9 @@ export default class TroopSetup {
 
         if (res.resourcesLost / 600 > 2) {
           const { name, icon, speed, attack, cost, carry } = this.unitsData[t1];
-          const count = idleTroops[t1] >= 1000 ? Math.max(2000, idleTroops[t1]) : Math.ceil(2000 / attack);
+          const count = idleUnits[t1] >= 1000 ? Math.max(2000, idleUnits[t1]) : Math.ceil(2000 / attack);
 
-          if (idleTroops[t1] >= count) {
+          if (idleUnits[t1] >= count) {
             infantryPower += attack * count;
             troops.push({ id: t1, name, icon, speed, count, cost });
             if (speed < raidSpeed) raidSpeed = speed;
@@ -255,7 +238,13 @@ export default class TroopSetup {
         const bountyTime = Math.round(bountySum / time);
         const ready = bountyTime > 1000 && bounty > 5 * resourcesLost;
 
-        if (ready) data.eventName = "raid";
+        if (ready) {
+          data.eventName = "raid";
+          data.units = troops.reduce((units, { id, count }) => {
+            units[id] = count;
+            return units;
+          }, {});
+        }
 
         data.forecast = {
           for: "raid",
@@ -278,13 +267,12 @@ export default class TroopSetup {
 
     const { scout } = this.unitsData;
 
-    if (!troops.length && !scouted && isOldReport && lootSum < 4000 && idleTroops[scout.id]) {
+    if (!data.eventName && !scouted && isOldReport && lootSum < 4000 && idleUnits[scout.id]) {
       data.eventName = "scout";
-      const { id, name, icon, speed } = this.unitsData.scout;
-      troops.push({ id, count: 1, name, icon, speed });
+      data.units[this.unitsData.scout.id] = 1;
     }
 
-    raidTroops[kid] = data;
+    raidUnits[kid] = data;
     return data;
   };
 }
