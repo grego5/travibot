@@ -6,7 +6,8 @@ export default class WebSocketServer {
     this.clients = wss.clients;
     this.routes = new Map();
 
-    wss.on("connection", (ws) => {
+    wss.on("connection", (ws, req) => {
+      ws.did = req.headers.did;
       ws.onmessage = (message) => {
         try {
           const { event, payload } = JSON.parse(message.data);
@@ -29,10 +30,15 @@ export default class WebSocketServer {
 
   send = (data) => {
     const now = Date.now();
-    Array.isArray(data) ? data.forEach((data) => (data.timestamp = now)) : (data.timestamp = now);
+    data.timestamp = now;
 
-    const message = JSON.stringify(data);
     this.clients.forEach((client) => {
+      if (data.callback) {
+        const payload = data.callback(client.headers);
+        if (payload) data.payload = payload;
+        delete data.callback;
+      }
+      const message = JSON.stringify(data);
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
       }

@@ -1,34 +1,13 @@
 import { Raid, xy2id } from "./index.js";
-// import { JSDOM } from "jsdom";
-
-function parseTravelTime(string) {
-  const digits = string.split(" ")[1].split(":");
-  return +digits[0] * 1000 * 60 * 60 + +digits[1] * 1000 * 60 + +digits[2] * 1000;
-}
 
 export default class RallyManager {
-  constructor({ browser, api, storage, unitsData }) {
-    browser.addRoutes([
-      {
-        name: "submitRally",
-        path: "/build.php",
-        headers: { redirect: "manual" },
-        methods: ["POST"],
-        params: [
-          ["gid", "16"],
-          ["tt", "2"],
-        ],
-      },
-    ]);
-
+  constructor({ api, storage, unitsData }) {
     api.addRoutes([{ name: "sendTroops", path: "/api/v1/troop/send", methods: ["PUT", "POST"] }]);
-
-    this.browser = browser;
     this.api = api;
     this.storage = storage;
     this.unitsData = unitsData;
-    this.raidedTiles = [];
-    this.raidingVillages = [];
+    this.raidedTiles = new Set();
+    this.raidingVillages = new Set();
   }
 
   heroReturnTime = ({ hero, travelTime }) => {
@@ -62,67 +41,7 @@ export default class RallyManager {
     rally.dispatch = () => this.sendTroops(rally);
     return rally;
   };
-  /*
-  dispatchRally = async (rally) => { // need fix for troops
-    const { did, from, to, eventName, eventType, units, hero, catapultTargets = [] } = rally;
 
-    const body = `eventType=${eventType}&x=${to.x}&y=${to.y}${troops.reduce(
-      (acc, { id, count }) => (acc += `&troop%5B${id}%5D=${count}`),
-      ""
-    )}&ok=ok`;
-
-    const res = await this.browser.submitRally.post({ body, params: [["newdid", did]] });
-    const html = await res.text();
-    const dom = new JSDOM(html);
-    const form = dom.window.document.getElementById("troopSendForm");
-
-    if (!form) {
-      console.log("dispatch failed", body);
-      return null;
-    }
-
-    const confirm = form.querySelector("button.rallyPointConfirm");
-    const checksum = confirm.getAttribute("onclick").match(/'([^']+)';/)[1];
-
-    let params = "";
-    for (const { name, value } of form.elements) if (value) params += `${name}=${value}&`;
-    params += `checksum=${checksum}`;
-
-    if (catapultTargets.length) {
-      params += `&troops[0][catapultTarget1]=${catapultTargets[0]}`;
-      if (catapultTargets[1]) params += `&troops[0][catapultTarget2]=${catapultTargets[1]}`;
-    }
-
-    const kid = xy2id(to);
-    this.browser.submitRally.post({
-      body: params,
-      logEvent: JSON.stringify(units) + ` => (${to.x}|${to.y}) (${kid})`,
-    });
-
-    const travelTime = parseTravelTime(form.querySelector("#in").textContent);
-    const returnTime = hero ? this.heroReturnTime({ hero, travelTime }) : travelTime;
-
-    const raid = new Raid({ did, from, to, eventName, eventType, travelTime, returnTime, troops });
-    const raidList = this.storage.get("raidList");
-    const raids = raidList[kid] || (raidList[kid] = []);
-    raids.push(raid);
-    raids.sort((a, b) => {
-      const dateA = a.eventType === 9 ? a.returnDate : a.arrivalDate;
-      const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
-      return dateA - dateB;
-    });
-    this.raidingVillages.find((v) => v.did === did) || this.raidingVillages.push(did);
-    this.raidedTiles.find((t) => {
-      if (t.kid === kid) {
-        t.raids = raids;
-        return true;
-      }
-    }) || this.raidedTiles.push({ kid, raids });
-    this.storage.save();
-
-    return raids;
-  };
-*/
   async sendTroops(rally) {
     const { did, from, to, eventName, scoutTarget, eventType, units, hero, catapultTargets } = rally;
     const kid = xy2id(to);
@@ -137,7 +56,7 @@ export default class RallyManager {
 
       const res = await this.api.sendTroops.post({
         body,
-        logEvent: `${JSON.stringify(units)} ${eventName} (${to.x}|${to.y}) (${kid})`,
+        logEvent: `${eventName} dispatch ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}`,
         headers: {
           "X-Nonce": headers.get("X-Nonce"),
         },
@@ -166,19 +85,16 @@ export default class RallyManager {
         const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
         return dateA - dateB;
       });
-      this.raidingVillages.find((v) => v.did === did) || this.raidingVillages.push(did);
-      this.raidedTiles.find((t) => {
-        if (t.kid === kid) {
-          t.raids = raids;
-          return true;
-        }
-      }) || this.raidedTiles.push({ kid, raids });
-      this.storage.save();
+      this.raidingVillages.add(did);
+      this.raidedTiles.add(kid);
 
       return raid;
     } catch (error) {
       console.log(error);
-      return;
+      const villageTroops = this.storage.get("villageTroops");
+      const troopsData = villageTroops[did];
+      console.log(troopsData);
+      debugger;
     }
   }
 }

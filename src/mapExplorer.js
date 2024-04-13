@@ -49,7 +49,7 @@ async function mapExplorer({ did, storage, tileGetter, farmList: FarmList, coord
         const newTarget = { kid, distance, coords };
         targets.findIndex((target) => target.kid === tile.kid) === -1 && targets.push(newTarget) >= 0;
         tileList[kid] = tile;
-        storage.save();
+        storage.save(["explorer"]);
       }
     } else if (Math.abs(dX) <= 1) {
       // set direction of Y to move and reverse direction of X

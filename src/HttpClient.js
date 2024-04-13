@@ -13,6 +13,7 @@ export class HttpClient {
     this.headers = headers;
     this.tokenDate = 0;
     this.tokenPath = `${__dirname}/temp/jwt.txt`;
+    this.loginCount = 0;
   }
   tokenLife = 7.2e6;
 
@@ -38,6 +39,20 @@ export class HttpClient {
   };
 
   login = async () => {
+    const headers = {
+      accept: "application/json, text/javascript, */*; q=0.01",
+      "accept-language": "en-US,en;q=0.9,he-IL;q=0.8,he;q=0.7,ru-RU;q=0.6,ru;q=0.5",
+      "content-type": "application/json; charset=UTF-8",
+      "sec-ch-ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+      "sec-ch-ua-mobile": "?1",
+      "sec-ch-ua-platform": '"Android"',
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+      "x-requested-with": "XMLHttpRequest",
+      "x-version": "2435.8",
+    };
+
     const { code } = await this.run({
       pathname: "/api/v1/auth/login",
       method: "POST",
@@ -47,19 +62,7 @@ export class HttpClient {
         w: "1920:1080",
         mobileOptimizations: true,
       },
-      headers: {
-        accept: "application/json, text/javascript, */*; q=0.01",
-        "accept-language": "en-US,en;q=0.9,he-IL;q=0.8,he;q=0.7,ru-RU;q=0.6,ru;q=0.5",
-        "content-type": "application/json; charset=UTF-8",
-        "sec-ch-ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-        "sec-ch-ua-mobile": "?1",
-        "sec-ch-ua-platform": '"Android"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "x-requested-with": "XMLHttpRequest",
-        "x-version": "2435.8",
-      },
+      headers,
       logEvent: "login",
     })
       .then((res) => {
@@ -75,24 +78,14 @@ export class HttpClient {
       pathname: "/api/v1/auth",
       method: "GET",
       params: [["code", code]],
-      headers: {
-        accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "accept-language": "en-US,en;q=0.9,he-IL;q=0.8,he;q=0.7,ru-RU;q=0.6,ru;q=0.5",
-        "sec-ch-ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-        "sec-ch-ua-mobile": "?1",
-        "sec-ch-ua-platform": '"Android"',
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-user": "?1",
-        "upgrade-insecure-requests": "1",
-      },
+      headers,
       logEvent: "auth",
     })
       .then((res) => {
         const cookies = res.headers.get("Set-Cookie");
         const token = cookies.substring(4, cookies.indexOf(";"));
+        this.loginCount++;
+        fs.writeFileSync(`${__dirname}/logs/login-count.txt`, JSON.stringify(this.loginCount));
         return token;
       })
       .catch((error) => {
@@ -148,6 +141,15 @@ export class HttpClient {
     try {
       const res = await fetch(url, config);
 
+      const jwt = res.headers.get("Set-Cookie");
+      if (jwt) {
+        const parts = jwt.split(".");
+        const decodedPayload = Buffer.from(parts[1], "base64").toString("utf-8");
+        const payload = JSON.parse(decodedPayload);
+        const { did } = payload.properties;
+        console.log(`--- ${pathname} ${did}`);
+      } else console.log(`--- ${pathname} null`);
+
       if (res.status === 400) {
         console.log(config);
         count = 3;
@@ -157,6 +159,7 @@ export class HttpClient {
       if (res.status === 401) {
         this.tokenDate = now;
         await this.login();
+        retry.headers.cookie = this.headers.cookie;
         throw new Error(`HTTP error! Status: ${res.status}, ${res.statusText}. Duration: ${now - this.tokenDate}`);
       }
 
@@ -164,7 +167,6 @@ export class HttpClient {
 
       return res;
     } catch (error) {
-      console.log(error);
       if (count < 2) return this.run({ retry: { url, config, count }, logEvent: "retry" });
       else throw error;
     }

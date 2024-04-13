@@ -1,7 +1,7 @@
 import { JSDOM } from "jsdom";
 
 export default class TileGetter {
-  constructor({ api, browser, storage, tribes }) {
+  constructor({ api, storage, tribes }) {
     api.addRoutes([
       {
         name: "tileDetails",
@@ -11,7 +11,6 @@ export default class TileGetter {
     ]);
 
     this.api = api;
-    this.browser = browser;
     this.storage = storage;
     this.animals = tribes[4];
     this.tileList = storage.get("tileList");
@@ -40,7 +39,7 @@ export default class TileGetter {
   };
 
   parseTile = (data) => {
-    const { mapCell, mapReports, surroundingReports, callback } = data;
+    const { mapCell, mapReports, surroundingReports } = data;
     const now = Date.now();
     /*
         type
@@ -61,15 +60,21 @@ export default class TileGetter {
       coords: { x, y },
       type,
       owned,
+      guards: {},
+      defense: {
+        idef: 0,
+        cdef: 0,
+        reward: 0,
+        ratio: 0,
+      },
     };
 
     tile.type !== type && Object.assign(tile, { type, owned });
 
     const report = this.reports[kid] || {
       icon: "",
-      text: "No data",
-      url: `https://${this.api.hostname}/karte.php?x=${x}&y=${y}`,
-      timestamp: now,
+      title: "No data",
+      timestamp: 0,
       loot: 0,
       scoutDate: 0,
     };
@@ -77,7 +82,7 @@ export default class TileGetter {
     if (type === 3) {
       const { troops } = oasis;
 
-      const guards = [];
+      const guards = {};
       const defense = {
         idef: 0,
         cdef: 0,
@@ -87,41 +92,28 @@ export default class TileGetter {
 
       for (const id in troops) {
         if (troops[id]) {
-          const { name, icon, idef, cdef, reward, upkeep } = this.animals[id];
+          const { idef, cdef, reward } = this.animals[id];
           const count = troops[id];
-
-          guards.push({
-            id,
-            icon,
-            name,
-            count,
-            upkeep,
-          });
-
+          guards[id] = count;
           defense.idef += idef * count;
           defense.cdef += cdef * count;
           defense.reward += reward * count;
         }
       }
 
-      if (guards.length) defense.ratio = Math.floor((defense.reward / Math.min(defense.idef, defense.cdef)) * 100);
+      if (defense.reward) defense.ratio = Math.floor((defense.reward / Math.min(defense.idef, defense.cdef)) * 100);
 
       if (!tile.bonus) {
         let totalBonus = 0;
         tile.bonus = oasis.bonus.map(function ({ amount, resourceType }) {
           const { id } = resourceType;
           totalBonus += amount;
-          return {
-            name: [, "Lumber", "Clay", "Iron", "Food"][id],
-            icon: [, "r1", "r2", "r3", "r4"][id],
-            amount,
-          };
+          return { id: [, "r1", "r2", "r3", "r4"][id], amount };
         });
         tile.production = { 25: 71, 50: 111 }[totalBonus];
       }
 
       Object.assign(tile, {
-        owned,
         guards,
         defense,
       });
@@ -155,23 +147,25 @@ export default class TileGetter {
 
           scoutedResources && (report.scoutDate = reportDate);
 
-          const casualties = attackerTroop ? attackerTroop.casualties : {};
+          const lost = {};
+          if (attackerTroop) {
+            const c = attackerTroop.casualties;
+            for (const t in c) if (c[t]) lost[t] = c[t];
+          }
 
           Object.assign(report, {
             icon: "iReport" + icon,
-            text: title,
             title,
-            url: `https://${this.api.hostname}/report?id=${id}`,
+            id,
             timestamp: reportDate,
             loot,
             ownerId,
-            casualties,
+            lost,
           });
         } else if (raidDate > reportDate) {
           Object.assign(report, {
             icon: "iReport3",
             title: "The oasis has been plundered",
-            text: "The oasis has been plundered",
             timestamp: raidDate,
             loot: 0,
           });
@@ -188,47 +182,13 @@ export default class TileGetter {
     }
 
     tile.timestamp = now;
-    callback && callback({ tile, report });
     return { tile, report };
   };
 
   getTile = async ({ x, y }) => {
     const variables = { x, y };
+    const query = `query($x:Int!,$y:Int!){mapCell(coordinates:{x:$x,y:$y}){type,id,x,y,oasis{id,bonus{resourceType{id}amount},type,bonusResources,troops{t1,t2,t3,t4,t5,t6,t7,t8,t9,t10}},}mapReports(coordinates:{x:$x,y:$y}){reports:mapCellReports{id,time,title,icon,ownerId,scoutedResources{lumber,clay,iron,crop},attackerBooty{carryMax,resources{lumber,clay,iron,crop}}attackerTroop{casualties{t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11}}}}surroundingReports:mapReports(coordinates:{x:$x,y:$y}){reports:surroundingReports{id,time,type}}}`;
 
-    const query = `
-   query ($x: Int!, $y: Int!) {
-     mapCell(coordinates: { x: $x, y: $y }) {
-       type, id, x, y,
-       oasis {
-         id,
-         bonus { resourceType { id } amount },
-         type, 
-         bonusResources, 
-         troops { t1, t2, t3, t4, t5, t6, t7, t8, t9, t10 }
-       },
-     }
- 
-     mapReports(coordinates: { x: $x, y: $y }) {
-       reports: mapCellReports { 
-         id, time, title, icon, ownerId,
-         scoutedResources { lumber, clay, iron, crop },
-         attackerBooty {
-           carryMax, 
-           resources {
-             lumber, clay, iron, crop
-           }
-         }
-         attackerTroop {
-          casualties { t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11 }
-         }
-       }
-     }
- 
-     surroundingReports: mapReports(coordinates: { x: $x, y: $y }) {
-       reports: surroundingReports { id, time, type }
-     }
-   }
- `;
     try {
       const data = await this.api.graphql({ query, variables, logEvent: `get tile ${x} | ${y}` });
       return this.parseTile(data);
@@ -246,38 +206,7 @@ export default class TileGetter {
       const { x, y } = this.updateQueue.get(kid).coords;
       kidList += kid + ", ";
 
-      query += `
-     m${kid} :mapCell(coordinates: { x: ${x}, y: ${y} }) {
-         type, id, x, y
-         oasis {
-           id,
-           bonus { resourceType { id } amount },
-           type, 
-           bonusResources, 
-           troops { t1, t2, t3, t4, t5, t6, t7, t8, t9 ,t10 }
-         },
-       }
- 
-       r${kid}: mapReports(coordinates: { x: ${x}, y: ${y} }) {
-         reports: mapCellReports { 
-           id, time, title, icon, ownerId
-           scoutedResources { lumber, clay, iron, crop },
-           attackerBooty { 
-             carryMax, 
-             resources {
-               lumber, clay, iron, crop
-             }
-           }
-           attackerTroop {
-            casualties { t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11 }
-           }
-         }
-       }
- 
-       s${kid}: mapReports(coordinates: { x: ${x}, y: ${y} }) {
-         reports: surroundingReports { id, time, type }
-       }
-     `;
+      query += `m${kid}:mapCell(coordinates:{x:${x},y:${y}}){type,id,x,y oasis{id,bonus{resourceType{id}amount},type,bonusResources,troops{t1,t2,t3,t4,t5,t6,t7,t8,t9,t10}},}r${kid}:mapReports(coordinates:{x:${x},y:${y}}){reports:mapCellReports{id,time,title,icon,ownerId scoutedResources{lumber,clay,iron,crop},attackerBooty{carryMax,resources{lumber,clay,iron,crop}}attackerTroop{casualties{t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11}}}}s${kid}:mapReports(coordinates:{x:${x},y:${y}}){reports:surroundingReports{id,time,type}}`;
     }
 
     query = "query {" + query + "}";
@@ -293,10 +222,11 @@ export default class TileGetter {
           mapCell: res[`m${kid}`],
           mapReports: res[`r${kid}`],
           surroundingReports: res[`s${kid}`],
-          callback,
         });
 
-        tileUpdates.push({ report, tile, kid });
+        const cbdata = callback ? callback({ tile, report }) : null;
+
+        tileUpdates.push({ report, tile, kid, cbdata });
       }
       this.updateQueue.clear();
       return tileUpdates;
@@ -348,7 +278,7 @@ export default class TileGetter {
     };
 
     if (type === 3) {
-      const guards = [];
+      const guards = {};
       const defense = {
         idef: 0,
         cdef: 0,
@@ -361,22 +291,14 @@ export default class TileGetter {
       if (troop_info[0].textContent !== "none") {
         for (const unit of troop_info) {
           const id = "t" + (+unit.querySelector(".unit").classList[1].slice(1) - 30);
-          const count = +unit.children[1].textContent;
-          const { name, icon, idef, cdef, reward, upkeep } = this.animals[id];
-
-          guards.push({
-            id,
-            icon,
-            name,
-            count,
-            upkeep,
-          });
-
+          const count = Number(unit.children[1].textContent);
+          const { idef, cdef, reward } = this.animals[id];
+          guards[id] = count;
           defense.idef += idef * count;
           defense.cdef += cdef * count;
           defense.reward += reward * count;
         }
-        defense.ratio = Math.floor((defense.reward / Math.min(defense.idef, defense.cdef)) * 100);
+        defense.reward = Math.floor((defense.reward / Math.min(defense.idef, defense.cdef)) * 100);
       }
 
       const bonus = [];
@@ -384,9 +306,8 @@ export default class TileGetter {
       const totalBonus = [...doc.querySelector("#distribution").rows].reduce(function (acc, res) {
         const amount = +res.textContent.match(/\d+/)[0];
         bonus.push({
-          icon: res.children[0].children[0].className,
+          id: res.children[0].children[0].className,
           amount,
-          name: res.children[2].textContent,
         });
 
         return (acc += amount);
@@ -407,7 +328,7 @@ export default class TileGetter {
       if (kid in this.tileList) {
         const { villages } = this.tileList[kid];
         villages.find((v) => Number(v.did) === Number(did)) === -1 && villages.push({ did, distance });
-        Object.assign(tileList[kid], tile);
+        tileList[kid] = tile;
       } else this.tileList[kid] = Object.assign(tile, { villages: [{ did, distance }] });
       this.storage.set("tileList", this.tileList);
       return tile;
@@ -416,3 +337,72 @@ export default class TileGetter {
     return tile;
   };
 }
+
+/*
+  query ($x: Int!, $y: Int!) {
+     mapCell(coordinates: { x: $x, y: $y }) {
+       type, id, x, y,
+       oasis {
+         id,
+         bonus { resourceType { id } amount },
+         type, 
+         bonusResources, 
+         troops { t1, t2, t3, t4, t5, t6, t7, t8, t9, t10 }
+       },
+     }
+ 
+     mapReports(coordinates: { x: $x, y: $y }) {
+       reports: mapCellReports { 
+         id, time, title, icon, ownerId,
+         scoutedResources { lumber, clay, iron, crop },
+         attackerBooty {
+           carryMax, 
+           resources {
+             lumber, clay, iron, crop
+           }
+         }
+         attackerTroop {
+          casualties { t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11 }
+         }
+       }
+     }
+ 
+     surroundingReports: mapReports(coordinates: { x: $x, y: $y }) {
+       reports: surroundingReports { id, time, type }
+     }
+   }
+ 
+
+m${kid} :mapCell(coordinates: { x: ${x}, y: ${y} }) {
+    type, id, x, y
+    oasis {
+      id,
+      bonus { resourceType { id } amount },
+      type, 
+      bonusResources, 
+      troops { t1, t2, t3, t4, t5, t6, t7, t8, t9 ,t10 }
+    },
+  }
+
+  r${kid}: mapReports(coordinates: { x: ${x}, y: ${y} }) {
+    reports: mapCellReports { 
+      id, time, title, icon, ownerId
+      scoutedResources { lumber, clay, iron, crop },
+      attackerBooty { 
+        carryMax, 
+        resources {
+          lumber, clay, iron, crop
+        }
+      }
+      attackerTroop {
+      casualties { t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11 }
+      }
+    }
+  }
+
+  s${kid}: mapReports(coordinates: { x: ${x}, y: ${y} }) {
+    reports: surroundingReports { id, time, type }
+  }
+     
+
+*/

@@ -1,33 +1,84 @@
-import { readFileSync, writeFileSync } from "fs";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import path from "path";
 
+const { readFileSync } = fs;
+const { writeFile } = fs.promises;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-class Storage {
-  constructor(storageFile, entries) {
-    this.storageFile = path.join(__dirname, "temp", storageFile);
-    this.storage = {};
+class FileWriter {
+  constructor() {
+    this.queueMap = new Map();
+    this.busy = new Set();
+  }
+
+  write = async (path, data) => {
+    this.queueMap.set(path, data);
+    await this.processQueue(path);
+  };
+
+  processQueue = async (path) => {
+    if (this.busy.has(path)) return;
+
+    this.busy.add(path);
+    const data = this.queueMap.get(path);
+    this.queueMap.delete(path);
 
     try {
-      const data = readFileSync(this.storageFile, "utf8");
-      this.storage = JSON.parse(data);
-      entries.forEach(([key, value]) => {
-        if (!this.storage[key]) this.storage[key] = value;
+      await writeFile(path, JSON.stringify(data, null, 2));
+    } catch (error) {
+      console.error("Error writing to file:", error);
+    } finally {
+      this.busy.delete(path);
+      if (this.queueMap.has(path)) await this.processQueue(path);
+    }
+  };
+}
+
+const { write } = new FileWriter();
+
+class Storage {
+  constructor(storeName, entries) {
+    this.storagePath = path.join(__dirname, storeName);
+    this.pathMap = {};
+    this.storage = {};
+    this.keys = [];
+
+    try {
+      entries.forEach(({ key, value, volatile }) => {
+        this.keys.push(key);
+        this.storage[key] = value;
+
+        if (volatile) return;
+
+        const filePath = path.join(this.storagePath, key + ".json");
+        this.pathMap[key] = filePath;
+        const text = readFileSync(filePath);
+        const data = JSON.parse(text);
+        this.storage[key] = data;
       });
     } catch (error) {
       if (error.code === "ENOENT") {
-        writeFileSync(this.storageFile, "{}", "utf8");
+        write(path, {});
       } else {
-        console.error("Error loading localStorage data:", error);
+        console.error(error);
         throw error;
       }
     }
   }
 
-  save() {
-    writeFileSync(this.storageFile, JSON.stringify(this.storage, null, 2), "utf8");
+  save(list = []) {
+    if (!list.length) {
+      for (const k in this.pathMap) {
+        write(this.pathMap[k], this.storage[k]);
+      }
+    } else {
+      for (const k of list) {
+        if (k in this.pathMap) write(this.pathMap[k], this.storage[k]);
+        else console.log(`Storage: File path for the key ${k} does not exist`);
+      }
+    }
   }
 
   get(key) {
@@ -36,18 +87,13 @@ class Storage {
 
   set(key, value) {
     this.storage[key] = value;
-    this.save();
-  }
-  delete(key) {
-    delete this.storage[key];
-    this.save();
-  }
-  clear() {
-    this.storage = {};
-    this.save();
+
+    if (key in this.pathMap) {
+      write(this.pathMap[key], value);
+    }
   }
   getAll() {
-    return { ...this.storage };
+    return this.storage;
   }
 }
 

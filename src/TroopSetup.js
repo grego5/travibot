@@ -1,15 +1,15 @@
-import { simCombat } from "./index.js";
 const t1 = "t1";
 const t11 = "t11";
 
 export default class TroopSetup {
-  constructor({ storage, hero, villages, unitsData }) {
+  constructor({ storage, hero, villages, tribes, tribeId }) {
+    this.unitsData = tribes[tribeId];
+    this.combatSim = new CombatSimulator({ tribes, tribeId }).sim;
     this.map = storage.get("map");
-    this.allRaidArrays = storage.get("raidArrays");
+    this.raidArrays = storage.get("raidArrays");
     this.tileList = storage.get("tileList");
     this.reports = storage.get("reports");
     this.hero = hero;
-    this.unitsData = unitsData;
     this.villages = {};
     this.villages = this.update({ hero, villages });
   }
@@ -38,26 +38,24 @@ export default class TroopSetup {
     return this.villages;
   };
 
-  assign = (did, target) => {
+  assign = (did, { kid, distance }) => {
     const now = Date.now();
-    const { idleUnits, raidUnits, hero } = this.villages[did];
-    const { kid, distance } = target;
-    const report = this.reports[kid] || { scoutDate: 0, timestamp: now, loot: 0 };
-    const { defense, guards } = this.tileList[kid];
-    const { reward, idef, cdef } = defense;
-    const raidArray = this.allRaidArrays[did];
-    const isOldReport = now - report.timestamp > 2.16e7; // 6 hours
-    const scouted = report.scoutDate === report.timestamp && now - report.timestamp < 2.16e7;
-    const lootSum = reward + report.loot;
-    const totalToDistance = lootSum / distance;
-
     const data = {
       units: {},
       forecast: {},
       eventName: "",
     };
+    const { idleUnits, raidUnits, hero } = this.villages[did];
+    const report = this.reports[kid] || { scoutDate: 0, timestamp: now, loot: 0 };
+    const { defense, guards } = this.tileList[kid];
+    const { reward, idef, cdef } = defense;
+    const raidArray = this.raidArrays[did];
+    const isOldReport = now - report.timestamp > 2.16e7; // 6 hours
+    const scouted = report.scoutDate === report.timestamp && now - report.timestamp < 2.16e7;
+    const lootSum = reward + report.loot;
+    const totalToDistance = lootSum / distance;
 
-    if (!guards.length && scouted && totalToDistance >= 100) {
+    if (!reward && scouted && totalToDistance >= 100) {
       let id = null;
       let required = 0;
 
@@ -78,7 +76,7 @@ export default class TroopSetup {
       }
     }
 
-    if (hero && guards.length) {
+    if (!data.eventName && hero) {
       const isMounted = Boolean(hero.equipment.horse);
 
       const heroBonus = ["helmet", "body", "horse", "shoes"].reduce(
@@ -102,9 +100,9 @@ export default class TroopSetup {
       );
 
       const { value: power } = hero.attributes[0];
-      const attacker = [{ id: t11, count: hero.health }];
+      const attacker = { t11: hero.health };
 
-      const footCombat = simCombat({
+      const footCombat = this.combatSim({
         infantryPower: power,
         infantryDefense: idef,
         cavaleryDefense: cdef,
@@ -112,7 +110,7 @@ export default class TroopSetup {
         defender: guards,
       });
 
-      const mountCombat = simCombat({
+      const mountCombat = this.combatSim({
         cavaleryPower: power,
         infantryDefense: idef,
         cavaleryDefense: cdef,
@@ -121,9 +119,9 @@ export default class TroopSetup {
       });
 
       const mountedRaid =
-        mountCombat.result[0].count <= heroBonus.damageReduction ||
+        mountCombat.result.t11 <= heroBonus.damageReduction ||
         distance / 7 > 0.8 ||
-        mountCombat.result[0].count - footCombat.result[0].count < 2;
+        mountCombat.result.t11 - footCombat.result.t11 < 2;
 
       const speed = 7 + mountedRaid ? Math.max(7, heroBonus.mountSpeed) : 0;
       const { result, alive, bounty, xp: _xp } = mountedRaid ? mountCombat : footCombat;
@@ -131,7 +129,7 @@ export default class TroopSetup {
       const xp = Math.round(_xp * (1 + heroBonus.xp / 100));
       const minXpToLoss = Math.min((5 / 20) * hero.level, Math.round((hero.xpForNextLevel / hero.health) * 10) / 10);
 
-      const healthLoss = Math.max(result[0].count - heroBonus.damageReduction, 0);
+      const healthLoss = Math.max(result.t11 - heroBonus.damageReduction, 0);
       const percetLoss = Math.round((healthLoss / hero.health) * 100);
       const xpToLoss = Math.round(healthLoss ? (xp / healthLoss) * 10 : xp * 10) / 10;
       const bountyToLoss = Math.round(healthLoss ? bounty / healthLoss : bounty);
@@ -176,33 +174,35 @@ export default class TroopSetup {
       let cavaleryPower = 0;
       let raidSpeed = 100;
       let raidCarry = 0;
+      let totalUnits = 0;
+      const units = {};
 
       for (const id in raidArray) {
         const count = Math.min(idleUnits[id], raidArray[id]);
-        const { name, icon, speed, attack, cost, carry } = this.unitsData[id];
-        const troops = [];
+        const { speed, attack, carry } = this.unitsData[id];
 
         if (id !== t11) {
           speed > 8 ? (cavaleryPower += attack * count) : (infantryPower += attack * count);
         }
 
         if (count >= raidArray[id] * 0.8 && (id === t11 ? hero.health >= 33 : true)) {
-          troops.push({ id, name, icon, speed, count, cost });
+          units[id] = count;
+          totalUnits += count;
           if (speed < raidSpeed) raidSpeed = speed;
           raidCarry += carry;
         } else {
-          troops.length = 0;
+          totalUnits = 0;
           break;
         }
       }
 
-      if (troops.length) {
-        const res = simCombat({
+      if (totalUnits) {
+        const res = this.combatSim({
           infantryPower,
           cavaleryPower,
           infantryDefense: idef,
           cavaleryDefense: cdef,
-          attacker: troops,
+          attacker: units,
           defender: guards,
         });
 
@@ -212,22 +212,22 @@ export default class TroopSetup {
 
           if (idleUnits[t1] >= count) {
             infantryPower += attack * count;
-            troops.push({ id: t1, name, icon, speed, count, cost });
+            units.t1 = count;
             if (speed < raidSpeed) raidSpeed = speed;
             raidCarry += carry;
           } else {
-            troops.length = 0;
+            totalUnits = 0;
           }
         }
       }
 
-      if (troops.length) {
-        const { result, alive, bounty, xp, resourcesLost } = simCombat({
+      if (totalUnits) {
+        const { result, alive, bounty, xp, resourcesLost } = this.combatSim({
           infantryPower,
           cavaleryPower,
           infantryDefense: idef,
           cavaleryDefense: cdef,
-          attacker: troops,
+          attacker: units,
           defender: guards,
         });
         const time = distance / raidSpeed;
@@ -240,10 +240,7 @@ export default class TroopSetup {
 
         if (ready) {
           data.eventName = "raid";
-          data.units = troops.reduce((units, { id, count }) => {
-            units[id] = count;
-            return units;
-          }, {});
+          data.units = units;
         }
 
         data.forecast = {
@@ -269,10 +266,57 @@ export default class TroopSetup {
 
     if (!data.eventName && !scouted && isOldReport && lootSum < 4000 && idleUnits[scout.id]) {
       data.eventName = "scout";
-      data.units[this.unitsData.scout.id] = 1;
+      data.units[scout.id] = 1;
     }
 
     raidUnits[kid] = data;
     return data;
+  };
+}
+
+class CombatSimulator {
+  constructor({ tribes, tribeId }) {
+    this.animals = tribes[4];
+    this.unitsData = tribes[tribeId];
+  }
+
+  sim = ({ infantryPower = 0, cavaleryPower = 0, infantryDefense = 0, cavaleryDefense = 0, attacker, defender }) => {
+    const infantryRatio = infantryPower / (infantryPower + cavaleryPower);
+    const cavaleryRatio = 1 - infantryRatio;
+    const defense = infantryRatio * infantryDefense + cavaleryRatio * cavaleryDefense + 10;
+    const power = infantryPower + cavaleryPower;
+    const x = 100 * Math.pow(defense / power, 1.5);
+    const loss = (100 * x) / (100 + x);
+    const damage = (100 - loss) / 100;
+    let resourcesLost = 0;
+    const result = {};
+    const alive = {};
+    let xp = 0;
+    let bounty = 0;
+
+    for (const id in attacker) {
+      const { cost } = this.unitsData[id] || { cost: 0 };
+      const lost = id === "t11" ? loss : Math.round(attacker[id] * (loss / 100));
+      resourcesLost += cost * lost;
+      result[id] = lost;
+    }
+
+    for (const id in defender) {
+      const { upkeep } = this.animals[id];
+      const kills = Math.round(defender[id] * damage);
+      const left = defender[id] - kills;
+      xp += kills * upkeep;
+      bounty += kills * upkeep * 160;
+      if (left) alive[id] = left;
+    }
+
+    return {
+      result,
+      alive,
+      bounty,
+      xp,
+      resourcesLost,
+      damage,
+    };
   };
 }

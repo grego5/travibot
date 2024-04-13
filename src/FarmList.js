@@ -88,7 +88,6 @@ class FarmList {
       const { mapId: kid, x, y } = target;
       village.targets.push({ kid, id, distance: Math.round(distance * 10) / 10, coords: { x, y } });
     });
-
     return village;
   };
 
@@ -204,7 +203,7 @@ class FarmList {
       const travelTime = parseInt(nextAttackAt + "000") - now;
       const { eventName, eventType, units, did, to, from } = rally;
       const raid = new Raid({ did, to, from, eventName, eventType, travelTime, returnTime: travelTime, units });
-      if (!raidingVillages.find((id) => id === did)) raidingVillages.push(did);
+      raidingVillages.add(did);
 
       const raids = raidList[kid] || (raidList[kid] = []);
       raids.push(raid);
@@ -213,14 +212,8 @@ class FarmList {
         const dateB = b.eventType === 9 ? b.returnDate : b.arrivalDate;
         return dateA - dateB;
       });
-      raidedTiles.find((t) => {
-        if (t.kid === kid) {
-          t.raids = raids;
-          return true;
-        }
-      }) || raidedTiles.push({ kid, raids });
+      raidedTiles.add(kid);
     });
-    this.storage.save();
   };
 }
 
