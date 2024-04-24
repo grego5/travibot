@@ -1,7 +1,6 @@
 export { default as main } from "./main.js";
 export { default as FarmList } from "./FarmList.js";
 export { default as HttpClient } from "./HttpClient.js";
-export { default as mapExplorer } from "./mapExplorer.js";
 export { default as Raid } from "./Raid.js";
 export { default as RallyManager } from "./RallyManager.js";
 export { default as Storage } from "./Storage.js";
@@ -14,10 +13,22 @@ export function xy2id({ x, y }) {
   const r = (s - 1) / 2;
   return (r - y) * s + (x - -r) + 1;
 }
+export function getDistance({ x: x1, y: y1 }, { x: x2, y: y2 }) {
+  const deltaX = x2 - x1;
+  const deltaY = y2 - y1;
+  return Math.sqrt(deltaX ** 2 + deltaY ** 2);
+}
 export const fragments = {
-  tribes: `bootstrapData{tribes{id,units{id,carry,attackPower,upkeepCost,velocity,defencePowerAgainstInfantry,defencePowerAgainstCavalry,trainingCost{lumber,clay,iron,crop}}}}`,
+  tribes: `bootstrapData{releaseVersion tribes{id,units{id,carry,attackPower,upkeepCost,velocity,defencePowerAgainstInfantry,defencePowerAgainstCavalry,trainingCost{lumber,clay,iron,crop}}}}`,
   rallypoint: `ownPlayer{village{researchedUnits{id level}}}`,
-  statusQuery: `ownPlayer{hero{attributes{code value usedPoints}xpPercentAchievedForNextLevel xpForNextLevel health speed level homeVillage{id}isAlive inventory{name typeId id amount}equipment{rightHand{typeId attributes{effectType value}}leftHand{typeId attributes{effectType value}}helmet{typeId attributes{effectType value}}body{typeId attributes{effectType value}}shoes{typeId attributes{effectType value}}horse{id typeId attributes{effectType value}}}}villages{id name x y resources{lumberProduction clayProduction ironProduction netCropProduction lumberStock clayStock ironStock cropStock maxStorageCapacity maxCropStorageCapacity}troops{moving{edges{node{id consumption time attackPower units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type markStatus arrivalTime}}}totalCount}ownTroopsAtTown{units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}}}}}`,
+  resources: `ownPlayer{villages{id name x y resources{lumberProduction clayProduction ironProduction netCropProduction lumberStock clayStock ironStock cropStock maxStorageCapacity maxCropStorageCapacity}}}`,
+  hero: `ownPlayer{hero{attributes{code value usedPoints}xpPercentAchievedForNextLevel xpForNextLevel health speed level homeVillage{id}isAlive inventory{name typeId id amount}equipment{rightHand{typeId attributes{effectType value}}leftHand{typeId attributes{effectType value}}helmet{typeId attributes{effectType value}}body{typeId attributes{effectType value}}shoes{typeId attributes{effectType value}}horse{id typeId attributes{effectType value}}}}}`,
+  troops: `ownPlayer{villages{id name x y troops{moving{edges{node{id consumption time attackPower units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type arrivalTime}}}}ownTroopsAtTown{units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}}}}}`,
+  build: (frags) =>
+    frags.reduce((query, name) => {
+      query += fragments[name];
+      return query;
+    }, "query{") + "}",
 };
 
 export const unitLabels = {
@@ -61,7 +72,7 @@ export const unitLabels = {
 };
 
 export function parseTribesData(tribes) {
-  const tribesData = {};
+  const tribesData = [["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10", "t11"]];
   tribes.forEach(function ({ id: tid, units }) {
     if (!(tid in unitLabels)) return;
     tribesData[tid] = {};
@@ -95,3 +106,11 @@ export function parseTribesData(tribes) {
 
   return tribesData;
 }
+
+export const logMessage = (text) => {
+  console.log(
+    `[${new Date().toLocaleTimeString("en-GB", {
+      hour12: false,
+    })}] ${text}`
+  );
+};

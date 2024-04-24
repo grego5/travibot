@@ -8,6 +8,7 @@ export default class RallyManager {
     this.unitsData = unitsData;
     this.raidedTiles = new Set();
     this.raidingVillages = new Set();
+    this.escapeEvents = {};
   }
 
   heroReturnTime = ({ hero, travelTime }) => {
@@ -52,7 +53,7 @@ export default class RallyManager {
     const body = { action: "troopsSend", targetMapId: kid, eventType, troops: [troops] };
 
     try {
-      const { headers } = await this.api.sendTroops.put({ body });
+      const { headers } = await this.api.sendTroops.put({ body, villageId: did });
 
       const res = await this.api.sendTroops.post({
         body,
@@ -60,22 +61,32 @@ export default class RallyManager {
         headers: {
           "X-Nonce": headers.get("X-Nonce"),
         },
+        villageId: did,
       });
       const data = await res.json();
       const { timeArrive, timeStart, arrivalIn } = data.troops[0];
-      const travelTime = arrivalIn * 1000;
+
       const raid = new Raid({
         did,
         from,
         to,
         eventName,
         eventType,
-        travelTime,
-        returnTime: hero ? this.heroReturnTime({ hero, travelTime }) : travelTime,
         departDate: timeStart * 1000,
-        arrivalDate: timeArrive * 1000,
         units,
       });
+
+      if (eventType === 5 && eventName === "escape") {
+        const { returnDate } = this.escapeEvents[did];
+        raid.travelTime = Math.min((returnDate - raid.departDate) / 2, 89000);
+        raid.arrivalDate = raid.departDate + raid.travelTime;
+        raid.returnDate = raid.arrivalDate + raid.travelTime;
+        delete this.escapeEvents[did];
+      } else {
+        raid.travelTime = arrivalIn * 1000;
+        raid.arrivalDate = timeArrive * 1000;
+        raid.returnDate = hero ? this.heroReturnTime({ hero, travelTime: raid.travelTime }) : raid.travelTime;
+      }
 
       const raidList = this.storage.get("raidList");
       const raids = raidList[kid] || (raidList[kid] = []);
@@ -90,11 +101,7 @@ export default class RallyManager {
 
       return raid;
     } catch (error) {
-      console.log(error);
-      const villageTroops = this.storage.get("villageTroops");
-      const troopsData = villageTroops[did];
-      console.log(troopsData);
-      debugger;
+      throw error;
     }
   }
 }

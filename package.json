@@ -12,10 +12,7 @@
   "dependencies": {
     "body-parser": "^1.20.2",
     "dotenv": "^16.4.5",
-    "express": "^4.19.1",
-    "form-data": "^4.0.0",
-    "formdata-node": "^6.0.3",
-    "jsdom": "^24.0.0",
+    "express": "^4.19.2",
     "ws": "^8.16.0"
   }
 }

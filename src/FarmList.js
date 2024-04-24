@@ -1,13 +1,15 @@
 import { Raid } from "./index.js";
+import { FileWriter } from "./Storage.js";
+const { write } = new FileWriter();
 
 class FarmList {
   constructor({ api, storage }) {
     this.storage = storage;
     this.api = api;
     this.api.addRoutes([
-      { name: "farmList", path: "/farm-list", methods: ["GET"] },
-      { name: "farmListSlot", path: "/farm-list/slot", methods: ["POST", "PUT"] },
-      { name: "farmListSend", path: "/farm-list/send", methods: ["POST"] },
+      { name: "farmList", path: "/api/v1/farm-list", methods: ["POST"] },
+      { name: "farmListSlot", path: "/api/v1/farm-list/slot", methods: ["POST", "PUT"] },
+      { name: "farmListSend", path: "/api/v1/farm-list/send", methods: ["POST"] },
     ]);
   }
 
@@ -55,15 +57,15 @@ class FarmList {
     return lists;
   };
 
-  createFor = async (village) => {
-    const { id, name } = village;
+  createFor = async ({ id, name }) => {
     const newList = {
       villageId: id,
       name,
       defaultUnits: { ...this.units, t1: 1 },
     };
+
     try {
-      const res = await this.api.farmList.get({ body: newList, logEvent: "Create farmlist" });
+      const res = await this.api.farmList.post({ body: newList, logEvent: "Create farmlist" });
 
       if (!res.ok) {
         const { error, message } = await res.json();
@@ -194,13 +196,13 @@ class FarmList {
     query += ` }`; // s1: farmSlot(id: 1) { ...SlotDetails }
 
     const data = await graphql({ query });
-    const now = Date.now();
+    const now = Math.floor(Date.now() / 1000) * 1000;
     const raidList = this.storage.get("raidList");
     const { raidingVillages, raidedTiles } = rallyManager;
 
     rallyQueue.forEach(({ id, rally }, kid) => {
       const { nextAttackAt } = data[`s${id}`];
-      const travelTime = parseInt(nextAttackAt + "000") - now;
+      const travelTime = nextAttackAt * 1000 - now;
       const { eventName, eventType, units, did, to, from } = rally;
       const raid = new Raid({ did, to, from, eventName, eventType, travelTime, returnTime: travelTime, units });
       raidingVillages.add(did);

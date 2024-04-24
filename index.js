@@ -12,7 +12,6 @@ import {
   Raid,
   TileGetter,
   main,
-  mapExplorer,
   WebSocketServer,
 } from "./src/index.js";
 
@@ -36,16 +35,6 @@ const api = new HttpClient({
   username: process.env.LOGIN,
   password: process.env.PASSWORD,
   hostname: process.env.HOSTNAME,
-  headers: {
-    accept: "application/json, text/javascript, */*; q=0.01",
-    "accept-language": "en-US,en;q=0.9,he-IL;q=0.8,he;q=0.7,ru-RU;q=0.6,ru;q=0.5",
-    "sec-ch-ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-    "sec-ch-ua-mobile": "?1",
-    "sec-ch-ua-platform": '"Android"',
-    "content-type": "application/json; charset=UTF-8",
-    "x-requested-with": "XMLHttpRequest",
-    "x-version": "2435.8",
-  },
 });
 const storage = new Storage("store", [
   { key: "map", value: {} },
@@ -57,11 +46,11 @@ const storage = new Storage("store", [
   { key: "raidArrays", value: {} },
   { key: "raidIncome", value: { amount: 0, since: 0 } },
   { key: "tribes", value: null },
-  { key: "explorer", value: null },
 ]);
 
 (async () => {
-  let pageQuery = fragments.statusQuery;
+  // await api.login();
+  let pageQuery = fragments.hero + fragments.troops;
   const callbackArray = [];
 
   if (!storage.get("tribes")) {
@@ -72,12 +61,13 @@ const storage = new Storage("store", [
     });
   }
 
-  const query = `query{statistics{gameWorldProgress{stages{time}}},ownPlayer{id,tribeId,goldFeatures{goldClub}}${pageQuery}}`;
+  const query = `query{bootstrapData{releaseVersion}statistics{gameWorldProgress{stages{time}}},ownPlayer{id,tribeId,goldFeatures{goldClub}}${pageQuery}}`;
 
   const data = await api.graphql({ query, callbackArray, logEvent: "init" });
   if (!data) return;
 
-  const { tribes, map, rallyCron, raidArrays } = storage.getAll();
+  const { tribes, map, tileList, reports, rallyCron, raidArrays } = storage.getAll();
+  api.setHeader("x-version", data.bootstrapData.releaseVersion);
   const { hero, villages, id: ownId, tribeId, goldFeatures } = data.ownPlayer;
   const { time: startDate } = data.statistics.gameWorldProgress.stages[0];
   const noobEndingDate = startDate * 1000 + 4.32e8 - 7.2e6;
@@ -85,7 +75,7 @@ const storage = new Storage("store", [
 
   const unitsData = tribes[tribeId];
 
-  const tileGetter = new TileGetter({ api, storage, tribes });
+  const tileGetter = new TileGetter({ api, storage });
   const rallyManager = new RallyManager({ api, storage, unitsData });
   const farmList = new FarmList({ api, storage });
   hero.idleSince = 0;
@@ -95,7 +85,14 @@ const storage = new Storage("store", [
     const did = village.id;
 
     if (!map[did]) {
-      map[did] = { targets: [] };
+      map[did] = {
+        targets: [],
+        autoraid: 0,
+        autosettings: {
+          raid: { t1: 0, t2: 0, t3: 0, t4: 0, t5: 0, t6: 0, t7: 0, t8: 0, t9: 0, t10: 0, t11: 0 },
+          escape: { t1: 1, t2: 1, t3: 1, t4: 1, t5: 1, t6: 1, t7: 1, t8: 1, t9: 1, t10: 1, t11: 1 },
+        },
+      };
       farmList.getListsFor(village).then((lists) => {
         const list = lists.find((list) => list.name === village.name);
         if (list) map[did] = farmList.linkList({ list, village: map[did] });
@@ -106,11 +103,14 @@ const storage = new Storage("store", [
       const { time, units, player, troopEvent } = node;
       if (player.id !== ownId) return;
       const { arrivalTime, type: eventType, cellTo, cellFrom } = troopEvent;
-
-      for (const id in units) if (!units[id]) delete units[id];
-      const troops = rallyManager.troopsFrom(units);
+      const toDelete = [];
+      const troops = [];
+      for (const id in units)
+        if (!units[id]) toDelete.push(id);
+        else troops.push(id);
+      toDelete.forEach((id) => delete units[id]);
       const travelTime = (arrivalTime - time) * 1000;
-      const returnTime = units.t11 ? rallyManager.heroReturnTime({ hero, travelTime }) : travelTime;
+      const returnTime = units.t11 && eventType !== 9 ? rallyManager.heroReturnTime({ hero, travelTime }) : travelTime;
       const arrivalDate = eventType === 9 ? arrivalTime * 1000 - travelTime : arrivalTime * 1000;
       const returnDate = eventType === 9 ? arrivalTime * 1000 : eventType === 5 ? 0 : arrivalDate + travelTime;
       const kid = eventType === 9 ? cellFrom.id : cellTo.id;
@@ -123,7 +123,12 @@ const storage = new Storage("store", [
         y: eventType === 9 ? cellTo.y : cellFrom.y,
         name: eventType === 9 ? cellTo.village.name : cellFrom.village.name,
       };
-      const eventName = { [unitsData.scout.id]: "scout", t11: "hero" }[troops[0].id] || "raid";
+
+      const eventName =
+        troops.length === 1
+          ? { [unitsData.scout.id]: "scout", t11: "hero" }[troops[0]] || "loot"
+          : { 3: "attack", 4: "raid", 9: "raid" }[eventType];
+
       const raid = new Raid({
         did,
         from,
@@ -154,7 +159,7 @@ const storage = new Storage("store", [
   storage.set("raidList", raidList);
   storage.set("villageTroops", villageTroops.getAll());
 
-  const state = {
+  const state = main({
     storage,
     noobEndingDate,
     rallyManager,
@@ -167,8 +172,7 @@ const storage = new Storage("store", [
     goldClub,
     wss,
     api,
-  };
-  main(state);
+  });
 
   app.post("/rally", (req, res) => {
     const data = req.body;
@@ -204,17 +208,58 @@ const storage = new Storage("store", [
 
     res.send(JSON.stringify(data));
   });
-  app.get("/explore", (req, res) => {
-    const { did, x, y } = req.query;
-    if (!did) res.send("explorer: No data");
+  app.post("/explore", async (req, res) => {
+    const village = req.body;
+    if (!village) res.status(400).send("explorer: No data");
 
-    mapExplorer({ did, storage, tileGetter, farmList, coords: { x, y }, callback: (data) => res.send(data) });
+    const did = village.id;
+    const area = map[did];
+    state.async = Date.now();
+    const { targets, tileUpdates } = await tileGetter.explore(village.x, village.y);
+
+    const lists = await farmList.getListsFor(village);
+    const list = lists.find((list) => list.name === village.name);
+    if (!list) {
+      const list = await farmList.createFor(village);
+      area.listId = list.id;
+      await farmList.createSlots({ listId: list.id, targets });
+    } else area.listId = list.id;
+
+    const { listId } = area;
+    area.targets = await farmList.linkTargets({ listId, targets });
+    area.autoraid = 0;
+
+    tileUpdates.forEach(({ tile, report, kid }) => {
+      const { id, distance } = area.targets.find((t) => t.kid === kid);
+      const village = { did, distance, listId, targetId: id };
+      if (kid in tileList) {
+        tileList[kid].villages.every((village) => village.did !== did) && tileList[kid].villages.push(village);
+      } else {
+        tile.villages = [village];
+        tileList[kid] = tile;
+      }
+      reports[kid] = report;
+    });
+
+    const troopsData = villageTroops.get(did);
+    targets.forEach((target) => troopsData.assign(target));
+
+    storage.save(["map", "tileList", "reports"]);
+
+    state.async = 0;
+
+    res.status(200).send();
   });
+
   wss.setRoute("rallyCron", ({ action, troopsAction }, client) => {
     switch (action) {
       case "get":
         if (client.readyState === WebSocket.OPEN) {
-          const data = { event: "rallyCron", timestamp: Date.now(), payload: JSON.stringify(rallyCron) };
+          const data = {
+            event: "rallyCron",
+            timestamp: Math.floor(Date.now() / 1000) * 1000,
+            payload: JSON.stringify(rallyCron),
+          };
           const message = JSON.stringify(data);
           client.send(message);
         }
@@ -240,123 +285,11 @@ const storage = new Storage("store", [
     raidArray ? (raidArrays[did] = raidArray) : delete raidArrays[did];
     storage.save(["raidArrays"]);
   });
-  app.get("/login", async (req, res) => {
-    const { did, unit, count, kid } = req.query;
-    const defaultHeders = {
-      accept: "application/json, text/javascript, */*; q=0.01",
-      "accept-language": "en-US,en;q=0.9,he-IL;q=0.8,he;q=0.7,ru-RU;q=0.6,ru;q=0.5",
-      "content-type": "application/json; charset=UTF-8",
-      "sec-ch-ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-      "sec-ch-ua-mobile": "?1",
-      "sec-ch-ua-platform": '"Android"',
-      "sec-fetch-dest": "empty",
-      "sec-fetch-mode": "cors",
-      "sec-fetch-site": "same-origin",
-      "x-requested-with": "XMLHttpRequest",
-      "x-version": "2435.8",
-    };
-
-    const login = async () => {
-      try {
-        const { code } = await fetch("https://ts3.x1.europe.travian.com/api/v1/auth/login", {
-          method: "POST",
-          headers: defaultHeders,
-          referrer: "https://ts3.x1.europe.travian.com/",
-          referrerPolicy: "strict-origin-when-cross-origin",
-          body: JSON.stringify({
-            name: "1type568@gmail.com",
-            password: "19gjmPTW88",
-            w: "1920:1080",
-            mobileOptimizations: true,
-          }),
-        }).then((res) => res.json());
-
-        const data = await fetch("https://ts3.x1.europe.travian.com/api/v1/auth?code=" + code, {
-          method: "GET",
-          headers: defaultHeders,
-          referrer: "https://ts3.x1.europe.travian.com/",
-          referrerPolicy: "strict-origin-when-cross-origin",
-        }).then((res) => res.headers.get("Set-Cookie"));
-        const token = data.substring(4, data.indexOf(";"));
-
-        return token;
-      } catch (error) {
-        console.error(error);
-      }
-    };
-
-    await (async () => {
-      const token = await login();
-      const parts = token.split(".");
-      const decodedPayload = Buffer.from(parts[1], "base64").toString("utf-8");
-      console.log("token 1: ", decodedPayload);
-
-      const headers = { ...defaultHeders, cookie: `JWT=${token}; SameSite=None; Secure` };
-      await fetch(`https://ts3.x1.europe.travian.com/api/v1/village/${did}/update-sort-index`, {
-        headers,
-        referrer: "https://ts3.x1.europe.travian.com/dorf1.php",
-        referrerPolicy: "strict-origin-when-cross-origin",
-        body: JSON.stringify({ to: 1 }),
-        method: "POST",
-        mode: "cors",
-        credentials: "include",
-      });
-    })();
-
-    const cookie = await (async () => {
-      const token = await login();
-      const parts = token.split(".");
-      const decodedPayload = Buffer.from(parts[1], "base64").toString("utf-8");
-      console.log("token 2: ", decodedPayload);
-
-      const body = {
-        action: "troopsSend",
-        targetMapId: Number(kid),
-        eventType: 4,
-        troops: [{ [unit]: Number(count), villageId: Number(did) }],
-      };
-
-      const headers = { ...defaultHeders, cookie: `JWT=${token}; SameSite=None; Secure` };
-      await fetch("https://ts3.x1.europe.travian.com/api/v1/troop/send", {
-        headers,
-        referrer: "https://ts3.x1.europe.travian.com/hero/adventures",
-        referrerPolicy: "strict-origin-when-cross-origin",
-        body: JSON.stringify(body),
-        method: "PUT",
-        mode: "cors",
-        credentials: "include",
-      }).then(async (res) => {
-        const cookie = res.headers.get("Set-Cookie");
-        const parts = cookie.split(".");
-        const decodedPayload = Buffer.from(parts[1], "base64").toString("utf-8");
-        console.log("token 3", decodedPayload);
-        return cookie;
-      });
-
-      await new Promise((res) => setTimeout(() => res(), 1000));
-
-      const cookie = await fetch("https://ts3.x1.europe.travian.com/api/v1/troop/send", {
-        headers,
-        referrer: "https://ts3.x1.europe.travian.com/hero/adventures",
-        referrerPolicy: "strict-origin-when-cross-origin",
-        body: JSON.stringify(body),
-        method: "PUT",
-        mode: "cors",
-        credentials: "include",
-      }).then(async (res) => {
-        const cookie = res.headers.get("Set-Cookie");
-        const parts = cookie.split(".");
-        const decodedPayload = Buffer.from(parts[1], "base64").toString("utf-8");
-        console.log("token 4", decodedPayload);
-        const data = await res.json();
-        console.log(data);
-        return cookie;
-      });
-
-      return cookie;
-    })();
-
-    res.send(cookie);
+  wss.setRoute("autosettings", ({ did, autosettings }, client) => {
+    map[did].autosettings = autosettings;
+    storage.save(["map"]);
+    const { assign } = villageTroops.get(did);
+    map[did].targets.forEach((target) => assign(target));
   });
 
   app.listen(port, () => {

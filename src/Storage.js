@@ -7,7 +7,7 @@ const { writeFile } = fs.promises;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-class FileWriter {
+export class FileWriter {
   constructor() {
     this.queueMap = new Map();
     this.busy = new Set();
@@ -45,27 +45,26 @@ class Storage {
     this.storage = {};
     this.keys = [];
 
-    try {
-      entries.forEach(({ key, value, volatile }) => {
-        this.keys.push(key);
-        this.storage[key] = value;
+    entries.forEach(({ key, value, volatile }) => {
+      this.keys.push(key);
+      this.storage[key] = value;
+      const filePath = path.join(this.storagePath, key + ".json");
+      this.pathMap[key] = filePath;
+      if (volatile) return;
 
-        if (volatile) return;
-
-        const filePath = path.join(this.storagePath, key + ".json");
-        this.pathMap[key] = filePath;
+      try {
         const text = readFileSync(filePath);
         const data = JSON.parse(text);
         this.storage[key] = data;
-      });
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        write(path, {});
-      } else {
-        console.error(error);
-        throw error;
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          write(filePath, "");
+        } else {
+          console.error(error);
+          throw error;
+        }
       }
-    }
+    });
   }
 
   save(list = []) {
@@ -87,11 +86,9 @@ class Storage {
 
   set(key, value) {
     this.storage[key] = value;
-
-    if (key in this.pathMap) {
-      write(this.pathMap[key], value);
-    }
+    if (key in this.pathMap) write(this.pathMap[key], value);
   }
+
   getAll() {
     return this.storage;
   }
