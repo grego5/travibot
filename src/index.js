@@ -18,18 +18,42 @@ export function getDistance({ x: x1, y: y1 }, { x: x2, y: y2 }) {
   const deltaY = y2 - y1;
   return Math.sqrt(deltaX ** 2 + deltaY ** 2);
 }
-export const fragments = {
-  tribes: `bootstrapData{releaseVersion tribes{id,units{id,carry,attackPower,upkeepCost,velocity,defencePowerAgainstInfantry,defencePowerAgainstCavalry,trainingCost{lumber,clay,iron,crop}}}}`,
-  rallypoint: `ownPlayer{village{researchedUnits{id level}}}`,
-  resources: `ownPlayer{villages{id name x y resources{lumberProduction clayProduction ironProduction netCropProduction lumberStock clayStock ironStock cropStock maxStorageCapacity maxCropStorageCapacity}}}`,
-  hero: `ownPlayer{hero{attributes{code value usedPoints}xpPercentAchievedForNextLevel xpForNextLevel health speed level homeVillage{id}isAlive inventory{name typeId id amount}equipment{rightHand{typeId attributes{effectType value}}leftHand{typeId attributes{effectType value}}helmet{typeId attributes{effectType value}}body{typeId attributes{effectType value}}shoes{typeId attributes{effectType value}}horse{id typeId attributes{effectType value}}}}}`,
-  troops: `ownPlayer{villages{id name x y troops{moving{edges{node{id consumption time attackPower units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type arrivalTime}}}}ownTroopsAtTown{units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}}}}}`,
-  build: (frags) =>
-    frags.reduce((query, name) => {
-      query += fragments[name];
-      return query;
-    }, "query{") + "}",
-};
+export class Query {
+  static fragments = {
+    bootstrap: `bootstrapData{releaseVersion}statistics{gameWorldProgress{stages{time}}},ownPlayer{id,tribeId,goldFeatures{goldClub}}`,
+    tribes: `bootstrapData{releaseVersion tribes{id,units{id,carry,attackPower,upkeepCost,velocity,defencePowerAgainstInfantry,defencePowerAgainstCavalry,trainingCost{lumber,clay,iron,crop}}}}`,
+    rallypoint: `ownPlayer{village{researchedUnits{id level}}}`,
+    resources: `ownPlayer{villages{id name x y resources{lumberProduction clayProduction ironProduction netCropProduction lumberStock clayStock ironStock cropStock maxStorageCapacity maxCropStorageCapacity}}}`,
+    hero: `ownPlayer{hero{attributes{code value usedPoints}xpPercentAchievedForNextLevel xpForNextLevel health speed level homeVillage{id}isAlive inventory{name typeId id amount}equipment{rightHand{typeId attributes{effectType value}}leftHand{typeId attributes{effectType value}}helmet{typeId attributes{effectType value}}body{typeId attributes{effectType value}}shoes{typeId attributes{effectType value}}horse{id typeId attributes{effectType value}}}}}`,
+    movingTroops: `ownPlayer{villages{id name x y troops{moving(filter:{types:[OUTGOING_ATTACK,OUTGOING_REINFORCEMENT,INCOMING_REINFORCEMENT,INCOMING_RETURNING]},sortOrder:earliestArrivingFirst){edges{node{id time units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type arrivalTime}}}}}}}`,
+    idleTroops: `ownPlayer{villages{id name x y troops{idle:ownTroopsAtTown{units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}}}}}`,
+    raidin: `ownPlayer{villages{id name x y troops{raidin:moving(filter:{types:[INCOMING_ATTACK]},sortOrder:earliestArrivingFirst){edges{node{id consumption time attackPower troopEvent{arrivalTime}}}}}}}`,
+    raidout: `ownPlayer{villages{id name x y troops{raidout:moving(filter:{types:[OUTGOING_ATTACK]},sortOrder:earliestArrivingFirst){edges{node{id consumption time attackPower player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type arrivalTime}}}}}}}`,
+    movein: `ownPlayer{villages{id name x y troops{movein:moving(filter:{types:[INCOMING_REINFORCEMENT]},sortOrder:earliestArrivingFirst){edges{node{id consumption time attackPower player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type arrivalTime}}}}}}}`,
+    returnin: `ownPlayer{villages{id name x y troops{returnin:moving(filter:{types:[INCOMING_RETURNING]},sortOrder:earliestArrivingFirst){edges{node{id consumption time attackPower player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type arrivalTime}}}}}}}`,
+    $moveout: `ownVillage(id:$id){id name x y troops{moveout:moving(filter: {types:[OUTGOING_REINFORCEMENT]}){edges{node{id time units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}troopEvent{cellTo{id x y village{id name}} arrivalTime}}}}}}`,
+  };
+
+  constructor(...keys) {
+    this.query = [];
+    this.vars = [];
+    keys.forEach((key) => {
+      this.query.push(Query.fragments[key]);
+    });
+  }
+
+  add = (key) => {
+    this.query.push(Query.fragments[key]);
+    return this;
+  };
+
+  addVar = (id, type) => {
+    this.vars.push(`$${id}:${type}!`);
+    return this;
+  };
+
+  toString = () => "query" + (this.vars.length ? `(${this.vars.join()})` : "") + `{${this.query.join("")}}`;
+}
 
 export const unitLabels = {
   1: [

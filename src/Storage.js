@@ -58,7 +58,7 @@ class Storage {
         this.storage[key] = data;
       } catch (error) {
         if (error.code === "ENOENT") {
-          write(filePath, "");
+          write(filePath, value);
         } else {
           console.error(error);
           throw error;

@@ -1,14 +1,13 @@
 import { Raid, xy2id } from "./index.js";
 
 export default class RallyManager {
-  constructor({ api, storage, unitsData }) {
+  constructor({ api, raidList, unitsData }) {
     api.addRoutes([{ name: "sendTroops", path: "/api/v1/troop/send", methods: ["PUT", "POST"] }]);
     this.api = api;
-    this.storage = storage;
+    this.raidList = raidList;
     this.unitsData = unitsData;
     this.raidedTiles = new Set();
     this.raidingVillages = new Set();
-    this.escapeEvents = {};
   }
 
   heroReturnTime = ({ hero, travelTime }) => {
@@ -57,7 +56,7 @@ export default class RallyManager {
 
       const res = await this.api.sendTroops.post({
         body,
-        logEvent: `${eventName} dispatch ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}`,
+        logEvent: `${from.name} ${eventName} dispatch ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}`,
         headers: {
           "X-Nonce": headers.get("X-Nonce"),
         },
@@ -66,30 +65,21 @@ export default class RallyManager {
       const data = await res.json();
       const { timeArrive, timeStart, arrivalIn } = data.troops[0];
 
+      const travelTime = arrivalIn * 1000;
       const raid = new Raid({
         did,
         from,
         to,
         eventName,
         eventType,
-        departDate: timeStart * 1000,
         units,
+        travelTime,
+        departDate: timeStart * 1000,
+        arrivalDate: timeArrive * 1000,
+        returnDate: hero ? this.heroReturnTime({ hero, travelTime }) : travelTime,
       });
 
-      if (eventType === 5 && eventName === "escape") {
-        const { returnDate } = this.escapeEvents[did];
-        raid.travelTime = Math.min((returnDate - raid.departDate) / 2, 89000);
-        raid.arrivalDate = raid.departDate + raid.travelTime;
-        raid.returnDate = raid.arrivalDate + raid.travelTime;
-        delete this.escapeEvents[did];
-      } else {
-        raid.travelTime = arrivalIn * 1000;
-        raid.arrivalDate = timeArrive * 1000;
-        raid.returnDate = hero ? this.heroReturnTime({ hero, travelTime: raid.travelTime }) : raid.travelTime;
-      }
-
-      const raidList = this.storage.get("raidList");
-      const raids = raidList[kid] || (raidList[kid] = []);
+      const raids = this.raidList[kid] || (this.raidList[kid] = []);
       raids.push(raid);
       raids.sort((a, b) => {
         const dateA = a.eventType === 9 ? a.returnDate : a.arrivalDate;

@@ -206,7 +206,7 @@ export class HttpClient {
   };
 
   graphql = async ({ query, fragments, variables, callbackArray = [], logEvent }) => {
-    const body = { query };
+    const body = { query: query.toString() };
     fragments && (body.fragments = fragments);
     variables && (body.variables = variables);
 

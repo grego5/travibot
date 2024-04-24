@@ -1,4 +1,4 @@
-import { fragments, xy2id, logMessage } from "./index.js";
+import { xy2id, logMessage, Query } from "./index.js";
 
 export function main(data) {
   const {
@@ -15,18 +15,20 @@ export function main(data) {
     api,
   } = data;
   const { map, rallyCron, tileList, reports, raidList, tribes } = storage.getAll();
-  const { createRally, raidingVillages, raidedTiles, escapeEvents } = rallyManager;
+  const { createRally, raidingVillages, raidedTiles } = rallyManager;
   const { updateTiles, updateQueue } = tileGetter;
   const rallyQueue = new Map();
   const state = {
+    escapeEvents: {},
     heroTarget: null,
     async: 0,
     last: null,
     lastTileUpdate: Math.floor(Date.now() / 1000) * 1000,
-    lastStatusUpdate: Math.floor(Date.now() / 1000) * 1000 - 240000,
+    nextStatusUpdate: Date.now() + 3e4,
   };
 
-  const statusQuery = fragments.build(["hero", "troops"]);
+  const statusQuery = new Query("hero", "raidin", "idleTroops");
+  const moveoutQuery = new Query("$moveout").addVar("id", "Int");
 
   const queueTile = (coords, cb) => {
     const kid = xy2id(coords);
@@ -71,11 +73,12 @@ export function main(data) {
   wss.setRoute("raidAbort", ({ kid, recall }) => {
     const now = Math.floor(Date.now() / 1000) * 1000;
     const raid = raidList[kid].find((raid) => raid.recall === recall);
-    const { eventName, units, to } = raid;
-    logMessage(`recalled ${eventName} ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}`);
+    const { from, eventName, units, to } = raid;
+    logMessage(`${from.name} recalled ${eventName} ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}`);
     raid.returnDate = now - raid.departDate + now;
     raid.arrivalDate = 0;
     raid.eventType = 9;
+    raid.eventName = "recall";
     raidedTiles.add(kid);
   });
 
@@ -91,16 +94,16 @@ export function main(data) {
       const kid = Number(i);
       const raids = raidList[kid];
 
-      const del = raids.findLastIndex((raid) => {
-        const { did, to, units, eventType, eventName, arrivalDate, returnDate, key } = raid;
+      const toDelete = raids.findLastIndex((raid) => {
+        const { did, from, to, units, eventType, eventName, arrivalDate, returnDate, key } = raid;
 
         if (eventType !== 9 && now >= arrivalDate) {
           raid.eventType = 9;
+          raid.eventName = "recall";
 
-          if (eventType === 5 && eventName === "escape") {
-            const query = `query($id:Int!){ownVillage(id:$id){id name x y troops{moving(filter: {types:[OUTGOING_REINFORCEMENT,FORWARDED]}){edges{node{id consumption time attackPower units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}player{id name}troopEvent{cellFrom{id x y village{name}}cellTo{id x y village{id name}}type arrivalTime}}}}ownTroopsAtTown{units{t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11}}}}}`;
-            api.graphql({ query, variables: { id: did } }).then((data) => {
-              data.ownVillage.troops.moving.edges.every(({ node }) => {
+          if (eventName[0] === "e") {
+            api.graphql({ query: moveoutQuery, variables: { id: did } }).then((data) => {
+              data.ownVillage.troops.moveout.edges.every(({ node }) => {
                 const { troopEvent, units } = node;
                 const { arrivalTime } = troopEvent;
                 let recall = new Date(Math.floor(arrivalTime / 10) * 10000).toLocaleTimeString("en-GB");
@@ -113,8 +116,10 @@ export function main(data) {
                     pathname: `/api/v1/troop/${node.id}/recall`,
                     method: "POST",
                     villageId: did,
-                    logEvent: "Escape recall",
+                    logEvent: "escape recall",
                   });
+
+                  state.nextStatusUpdate = returnDate;
 
                   return false;
                 }
@@ -151,10 +156,9 @@ export function main(data) {
               raidedTiles.add(kid);
             }
 
-            console.log(
-              `[${new Date().toLocaleTimeString("en-GB", {
-                hour12: false,
-              })}] ${eventName} has arrived ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}` + moreInfo
+            logMessage(
+              `${from.name} ${eventName} has arrived ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}` +
+                moreInfo
             );
           });
 
@@ -162,10 +166,8 @@ export function main(data) {
         }
 
         if (eventType === 9 && now >= returnDate) {
-          console.log(
-            `[${new Date().toLocaleTimeString("en-GB", { hour12: false })}] ${eventName} has returned ${JSON.stringify(
-              units
-            )} from ${JSON.stringify(to)} ${kid}`
+          logMessage(
+            `${from.name} ${eventName} has returned ${JSON.stringify(units)} from ${JSON.stringify(to)} ${kid}`
           );
 
           const { idleUnits, hero } = villageTroops.get(did);
@@ -177,7 +179,7 @@ export function main(data) {
         }
       });
 
-      raids.splice(0, del + 1);
+      raids.splice(0, toDelete + 1);
       if (!raids.length) delete raidList[kid];
     }
 
@@ -221,48 +223,52 @@ export function main(data) {
         const troopsAction = rallyCron[i];
         if (troopsAction.departDate > now) break;
 
-        const { did, units, eventName, eventType, from, to } = troopsAction;
+        const { did, units, eventName, from, to, returnDate } = troopsAction;
         const troopsData = villageTroops.get(did);
         const { idleUnits } = troopsData;
         let totalTroops = 0;
 
-        const check = () => {
-          if (eventType === 5 && eventName === "escape") {
-            const autoscape = map[did].autosettings.escape;
-            tribes[0].forEach((id) => {
-              if (idleUnits[id] * autoscape[id]) {
-                units[id] = idleUnits[id];
-                totalTroops += idleUnits[id];
-                idleUnits[id] = 0;
-              }
-            });
-          } else {
-            const snapshot = { ...units };
+        if (eventName[0] === "e") {
+          const autoscape = map[did].autosettings.escape;
+          delete state.escapeEvents[did];
 
-            for (const id in units) {
-              const count = units[id];
-              if (idleUnits[id] < Math.ceil(count * 0.9)) {
-                troopsData.idleUnits = snapshot;
-                return 0;
-              }
-
-              const available = Math.min(count, idleUnits[id]);
-              units[id] = available;
-              totalTroops += available;
-              idleUnits[id] -= available;
+          tribes[0].forEach((id) => {
+            if (idleUnits[id] * autoscape[id]) {
+              units[id] = idleUnits[id];
+              totalTroops += idleUnits[id];
+              idleUnits[id] = 0;
             }
+          });
+        } else {
+          const snapshot = { ...units };
+
+          for (const id in units) {
+            const count = units[id];
+            if (idleUnits[id] < Math.ceil(count * 0.9)) {
+              troopsData.idleUnits = snapshot;
+              return 0;
+            }
+
+            const available = Math.min(count, idleUnits[id]);
+            units[id] = available;
+            totalTroops += available;
+            idleUnits[id] -= available;
           }
+        }
 
-          if (units.t11) troopsAction.hero = troopsData.hero;
+        if (totalTroops) {
+          troopsAction.hero = troopsData.hero;
 
-          return totalTroops;
-        };
-
-        if (check()) {
           toDispatch.push(
             createRally(troopsAction)
               .dispatch()
               .then((raid) => {
+                if (eventName[0] === "e") {
+                  raid.travelTime = Math.min((returnDate - raid.departDate) / 2, 89000);
+                  raid.arrivalDate = raid.departDate + raid.travelTime;
+                  raid.returnDate = raid.arrivalDate + raid.travelTime;
+                }
+
                 if (raid.units.t11) troopsData.hero.idleSince = raid.returnDate;
               })
               .catch((error) => console.error(error))
@@ -274,11 +280,9 @@ export function main(data) {
             await toDispatch[0];
           }
         } else {
-          if (did in escapeEvents) delete escapeEvents[did];
-
           toDelete = i + 1;
           logMessage(
-            `${eventName} ${JSON.stringify(units)} to (x:${to.x} y:${to.y}) failed. Insufficient units in ${from.name}`
+            `${from.name} ${eventName} to ${JSON.stringify(to)} canceled. Insufficient units ${JSON.stringify(units)}`
           );
         }
       }
@@ -470,7 +474,7 @@ export function main(data) {
           toDispatch.push(
             new Promise((resolve) => {
               const { rally } = rallyQueue.get(kid);
-              const { did, units, eventName, to } = rally;
+              const { did, units, eventName, to, from } = rally;
 
               setTimeout(async () => {
                 const { idleUnits } = villageTroops.get(did);
@@ -486,11 +490,12 @@ export function main(data) {
                   if (raid && units.t11) villageTroops.hero.idleSince = raid.returnDate;
                   resolve(raid);
                 } else {
-                  console.log(
-                    `[${new Date().toLocaleTimeString("en-GB", {
-                      hour12: false,
-                    })}] Insufficient units for ${eventName} ${JSON.stringify(units)} to ${JSON.stringify(to)} ${kid}`
+                  logMessage(
+                    `${from.name} ${eventName} to ${JSON.stringify(to)} canceled. Insufficient units ${JSON.stringify(
+                      units
+                    )}`
                   );
+
                   if (kid in tileList) {
                     const { distance } = tileList[kid].villages.find((village) => village.did === did);
                     villageTroops.get(did).assign({ kid, distance });
@@ -515,11 +520,12 @@ export function main(data) {
     }
 
     // Status updates
-    if (now - state.lastStatusUpdate >= 3e5) {
+    if (now >= state.nextStatusUpdate) {
       state.async = now;
       state.last = "status update";
       const data = await api.graphql({ query: statusQuery, logEvent: "status update" });
       const { hero, villages } = data.ownPlayer;
+      let update = 0;
 
       villages.forEach((village) => {
         if (!map[village.id]) {
@@ -538,17 +544,18 @@ export function main(data) {
       for (const did in reassigned) wss.send({ event: "villageTroops", payload: reassigned[did] });
       raidingVillages.clear();
 
-      villages.forEach((village, i) => {
-        village.troops.moving.edges.forEach(({ node }) => {
+      villages.forEach((village) => {
+        village.troops.raidin.edges.forEach(({ node }) => {
           const {
+            id,
             attackPower,
-            troopEvent: { type, arrivalTime, cellTo },
+            troopEvent: { arrivalTime },
           } = node;
 
           // TEST
-          if ((type === 4 || type === 3) && cellTo.village && cellTo.village.id === village.id && attackPower > 1) {
+          if (attackPower > 1) {
             const attackDate = arrivalTime * 1000;
-            const escapeEvent = escapeEvents[village.id];
+            const escapeEvent = state.escapeEvents[village.id];
 
             if (!escapeEvent) {
               const hideout = villages.find(({ id }) => id !== village.id);
@@ -562,46 +569,47 @@ export function main(data) {
                 eventType: 5,
                 departDate: attackDate - 2000,
                 returnDate: attackDate + 1000,
-                key: now + i,
+                key: id,
               };
 
-              const date1 = new Date(troopsAction.departDate).toLocaleString("en-GB", { hour12: false });
-              const date2 = new Date(troopsAction.returnDate).toLocaleString("en-GB", { hour12: false });
+              const date1 = new Date(troopsAction.departDate).toLocaleTimeString("en-GB", { hour12: false });
+              const date2 = new Date(troopsAction.returnDate).toLocaleTimeString("en-GB", { hour12: false });
 
               logMessage(`${village.name} will escape to ${hideout.name} at ${date1} and return at ${date2}`);
 
-              escapeEvents[village.id] = troopsAction;
+              state.escapeEvents[village.id] = troopsAction;
               rallyCron.push(troopsAction);
-              rallyCron.sort((a, b) => a.departDate - b.departDate);
-              storage.save(["rallyCron"]);
-              wss.send({ event: "rallyCron", payload: rallyCron });
+              update = 1;
             } else {
               if (escapeEvent.departDate > attackDate - 2000) {
                 escapeEvent.departDate = attackDate - 2000;
-                const date1 = new Date(escapeEvent.departDate).toLocaleString("en-GB", { hour12: false });
-                logMessage(`Escape depart date for ${village.name} changed to ${date1}`);
-
-                rallyCron.sort((a, b) => a.departDate - b.departDate);
-                storage.save(["rallyCron"]);
-                wss.send({ event: "rallyCron", payload: rallyCron });
+                const date1 = new Date(escapeEvent.departDate).toLocaleTimeString("en-GB", { hour12: false });
+                logMessage(`${village.name} escape depart date changed to ${date1}`);
+                update = 1;
               }
 
               const recallWindow = escapeEvent.returnDate - escapeEvent.departDate < 178000;
-              if (!recallWindow || (recallWindow && escapeEvent.returnDate <= attackDate)) {
+              if (
+                !recallWindow ||
+                (attackDate >= escapeEvent.returnDate && attackDate - escapeEvent.departDate < 178000)
+              ) {
                 escapeEvent.returnDate = attackDate + 1000;
-                const date2 = new Date(escapeEvent.returnDate).toLocaleString("en-GB", { hour12: false });
-                logMessage(`Escape return date for ${village.name} changed to ${date2}`);
-
-                rallyCron.sort((a, b) => a.departDate - b.departDate);
-                storage.save(["rallyCron"]);
-                wss.send({ event: "rallyCron", payload: rallyCron });
+                const date2 = new Date(escapeEvent.returnDate).toLocaleTimeString("en-GB", { hour12: false });
+                logMessage(`${village.name} escape return date changed to ${date2}`);
+                update = 1;
               }
             }
           }
         });
       });
-      console.log(escapeEvents);
-      state.lastStatusUpdate = now;
+
+      if (update) {
+        rallyCron.sort((a, b) => a.departDate - b.departDate);
+        storage.save(["rallyCron"]);
+        wss.send({ event: "rallyCron", payload: rallyCron });
+      }
+
+      state.nextStatusUpdate += 3e5;
       state.async = 0;
     }
   }, 100);

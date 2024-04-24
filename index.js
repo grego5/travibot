@@ -3,7 +3,6 @@ import express from "express";
 import bodyParser from "body-parser";
 import {
   HttpClient,
-  fragments,
   Storage,
   FarmList,
   TroopSetup,
@@ -13,6 +12,7 @@ import {
   TileGetter,
   main,
   WebSocketServer,
+  Query,
 } from "./src/index.js";
 
 dontenv.config();
@@ -49,19 +49,17 @@ const storage = new Storage("store", [
 ]);
 
 (async () => {
-  // await api.login();
-  let pageQuery = fragments.hero + fragments.troops;
+  const query = new Query("bootstrap", "hero", "movingTroops", "idleTroops");
+
   const callbackArray = [];
 
   if (!storage.get("tribes")) {
-    pageQuery += fragments.tribes;
+    query.add("tribes");
     callbackArray.push(function (data) {
       const tribes = parseTribesData(data.bootstrapData.tribes);
       storage.set("tribes", tribes);
     });
   }
-
-  const query = `query{bootstrapData{releaseVersion}statistics{gameWorldProgress{stages{time}}},ownPlayer{id,tribeId,goldFeatures{goldClub}}${pageQuery}}`;
 
   const data = await api.graphql({ query, callbackArray, logEvent: "init" });
   if (!data) return;
@@ -74,13 +72,13 @@ const storage = new Storage("store", [
   const goldClub = !!goldFeatures.goldClub;
 
   const unitsData = tribes[tribeId];
+  const raidList = {};
 
+  const rallyManager = new RallyManager({ api, raidList, unitsData });
   const tileGetter = new TileGetter({ api, storage });
-  const rallyManager = new RallyManager({ api, storage, unitsData });
   const farmList = new FarmList({ api, storage });
   hero.idleSince = 0;
 
-  const raidList = {};
   villages.forEach((village) => {
     const did = village.id;
 

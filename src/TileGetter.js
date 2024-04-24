@@ -154,7 +154,7 @@ export default class TileGetter {
       const data = await this.api.graphql({ query, variables, logEvent: `get tile ${x} | ${y}` });
       return this.parseTile(data);
     } catch (error) {
-      console.log(error.message);
+      console.error(error);
       return null;
     }
   };
@@ -192,8 +192,8 @@ export default class TileGetter {
       this.updateQueue.clear();
       return tileUpdates;
     } catch (error) {
-      console.log(error.message);
       console.log(this.updateQueue);
+      console.error(error);
     }
 
     return tileUpdates;

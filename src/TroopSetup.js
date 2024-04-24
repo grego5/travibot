@@ -14,7 +14,13 @@ export default class TroopSetup {
     this.villages = this.update({ hero, villages });
   }
 
-  get = (did) => this.villages[did] || (this.villages[did] = {});
+  get = (did, coords) => {
+    if (!did) throw new Error("village id is not defined for get method");
+    if (did in this.villages) return this.villages[did];
+    if (!coords) throw new Error("coordinates not defined for new village");
+    return (this.villages[did] = { did, coords, raidUnits: {}, assign: (target) => this.assign(did, target) });
+  };
+
   getAll = () => this.villages;
 
   update = ({ hero, villages }) => {
@@ -22,18 +28,12 @@ export default class TroopSetup {
     this.hero = hero;
     villages.forEach((village) => {
       const { id: did, name, x, y, troops } = village;
-      const troopsData = {
-        did,
-        name,
-        coords: { x, y },
-        idleUnits: troops.ownTroopsAtTown.units,
-        raidUnits: {},
-        hero: this.hero.homeVillage.id === did ? this.hero : null,
-        assign: (target) => this.assign(did, target),
-      };
-      Object.assign(this.get(village.id), troopsData);
-      const { targets } = this.map[village.id];
-      targets.forEach((target) => troopsData.assign(target));
+      const TroopsData = this.get(village.id, { x, y });
+
+      TroopsData.name = name;
+      TroopsData.idleUnits = troops.idle.units;
+      TroopsData.hero = this.hero.homeVillage.id === did ? this.hero : null;
+      this.map[village.id].targets.forEach((target) => TroopsData.assign(target));
     });
     return this.villages;
   };
